@@ -151,6 +151,36 @@ const decorGeometry = placeholderGeometry; // Reuse box for simplicity initially
 let lastPreviewGridPos: { row: number; col: number } | null = null;
 /// --- End Bounding Boxes ---
 
+// --- Day/Night Cycle Configuration ---
+const SUNRISE_HOUR = 6; // 6 AM
+const SUNSET_HOUR = 22; // 6 PM
+const DAY_DURATION_HOURS = SUNSET_HOUR - SUNRISE_HOUR;
+const SUN_DISTANCE = 50; // How far away the light source is
+
+// --- Colors (Define as THREE.Color objects) ---
+const DAY_SKY_COLOR = new THREE.Color(0x87CEEB); // Light Sky Blue
+const NIGHT_SKY_COLOR = new THREE.Color(0x0b122e); // Deep Navy Blue
+const SUNRISE_SKY_COLOR = new THREE.Color(0xffca7a); // Orangey pink
+const SUNSET_SKY_COLOR = new THREE.Color(0xff8a63); // Reddish orange
+
+// --- Light Intensities ---
+const MAX_DIRECTIONAL_INTENSITY = 1.0; // Peak sun intensity
+const MIN_DIRECTIONAL_INTENSITY_NIGHT = 0.05; // Faint moonlight/ambient directional
+const MAX_AMBIENT_INTENSITY = 0.8; // Ambient light during the day
+const MIN_AMBIENT_INTENSITY = 0.15; // Ambient light at night
+
+// --- State Variable ---
+let ambientLight: THREE.AmbientLight; // Declare at top level
+// Keep directionalLight declared/assigned in onMount, but we'll need access to it.
+// Let's ensure directionalLight is also declared at the top level for access.
+let directionalLight: THREE.DirectionalLight;
+
+// We can reuse the THREE.Color objects for lerping to avoid creating new ones constantly
+const currentSkyColor = new THREE.Color();
+const interpolatedColor1 = new THREE.Color();
+const interpolatedColor2 = new THREE.Color();
+// --- End Day/Night Cycle Configuration ---
+
 let container: HTMLDivElement;
 let renderer: THREE.WebGLRenderer;
 let scene: THREE.Scene;
@@ -163,7 +193,6 @@ const SAVE_INTERVAL_MS = 15000;
 const BACKGROUND_UPDATE_INTERVAL_MS = 500; // Check for growth/dynamics every 500ms (2fps) - adjust as needed
 // Interval ID for the background check
 let backgroundCheckIntervalId: number | undefined = undefined;
-
 
 let isRenderLoopActive: boolean = false; // Is the continuous loop running?
 let renderRequested: boolean = false;   // Has a single frame been requested?
@@ -429,6 +458,72 @@ function stopRenderLoop() {
          console.log("Ensuring background check interval is running (loop was not active).");
          backgroundCheckIntervalId = window.setInterval(performBackgroundCheck, BACKGROUND_UPDATE_INTERVAL_MS);
     }
+}
+
+// function for Day Night cycle
+function updateDayNightCycle() {
+    if (!directionalLight || !ambientLight || !scene) return; // Safety check
+
+    const date = new Date();
+    const currentHour = date.getHours() + date.getMinutes() / 60; // Get hour with fractional minutes
+
+    let sunAngle = 0; // Angle representing sun position (-PI/2 sunrise, 0 midday, PI/2 sunset)
+    let timeProgress = 0; // 0 at sunrise, 1 at sunset
+    let dayFactor = 0; // 0 at horizon, 1 at midday (based on sun height)
+
+    if (currentHour >= SUNRISE_HOUR && currentHour < SUNSET_HOUR) {
+        // --- Daytime ---
+        timeProgress = (currentHour - SUNRISE_HOUR) / DAY_DURATION_HOURS; // Progress from 0 to 1
+        sunAngle = (timeProgress - 0.5) * Math.PI; // Angle from -PI/2 to PI/2
+        dayFactor = Math.cos(sunAngle); // Intensity factor (0 -> 1 -> 0)
+
+        // Calculate Position
+        const lightX = Math.sin(sunAngle) * -SUN_DISTANCE;
+        const lightY = dayFactor * SUN_DISTANCE; // Y position directly related to dayFactor
+        const lightZ = SUN_DISTANCE * 0.4; // Keep Z somewhat constant or vary slightly
+
+        directionalLight.position.set(lightX, lightY, lightZ);
+        directionalLight.intensity = dayFactor * MAX_DIRECTIONAL_INTENSITY;
+        ambientLight.intensity = MIN_AMBIENT_INTENSITY + dayFactor * (MAX_AMBIENT_INTENSITY - MIN_AMBIENT_INTENSITY);
+
+        // Calculate Background Color (blend between sunrise/day/sunset)
+        if (timeProgress < 0.5) { // Morning: Sunrise -> Day
+            // Interpolate based on how far into the morning we are (0 to 1)
+            const morningProgress = timeProgress * 2;
+            currentSkyColor.lerpColors(SUNRISE_SKY_COLOR, DAY_SKY_COLOR, morningProgress);
+        } else { // Afternoon: Day -> Sunset
+            // Interpolate based on how far into the afternoon we are (0 to 1)
+            const afternoonProgress = (timeProgress - 0.5) * 2;
+            currentSkyColor.lerpColors(DAY_SKY_COLOR, SUNSET_SKY_COLOR, afternoonProgress);
+        }
+
+    } else {
+        // --- Nighttime ---
+        directionalLight.intensity = MIN_DIRECTIONAL_INTENSITY_NIGHT;
+        ambientLight.intensity = MIN_AMBIENT_INTENSITY;
+        currentSkyColor.copy(NIGHT_SKY_COLOR); // Use night color directly
+
+        // Optional: Position the light somewhere below the horizon or opposite side
+        // Find how far into the night we are
+        let nightHour = currentHour < SUNRISE_HOUR ? currentHour + 24 : currentHour; // Adjust hours past midnight
+        let nightProgress = (nightHour - SUNSET_HOUR) / (24 - DAY_DURATION_HOURS); // 0 at sunset, 1 at sunrise
+        // Simple low-arc position for "moon" (optional, could be fixed)
+        let moonAngle = (nightProgress - 0.5) * Math.PI * 0.8 + Math.PI; // Offset arc below horizon
+        directionalLight.position.set(
+            Math.sin(moonAngle) * -SUN_DISTANCE * 0.5,
+            Math.cos(moonAngle) * SUN_DISTANCE * 0.3, // Lower arc
+            SUN_DISTANCE * 0.4
+        );
+    }
+
+    // Apply the calculated background color
+    scene.background = currentSkyColor; // Assign the updated color object
+
+    // Important: Target might need update if light moves far, ensure shadows work
+    // If the main target is (0,0,0), this might not be strictly needed, but good practice
+    directionalLight.target.updateMatrixWorld();
+    // Shadow camera helper would need updating if used:
+    // shadowHelper?.update();
 }
 
 /**
@@ -1091,6 +1186,8 @@ function renderFrame() {
 	renderRequested = false;
 	animationFrameId = undefined; // Clear the ID for this frame
 
+	updateDayNightCycle();
+
 	const now = Date.now();
 	let needsSave = false;
 	let visualChangeOccurred = false; // Track if anything visually changed this frame
@@ -1192,11 +1289,13 @@ onMount(() => {
 	// renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Example: Softer shadows
 	container.appendChild(renderer.domElement);
 
-	const ambientLight = new THREE.AmbientLight(0xffffff, 1);
-	scene.add(ambientLight);
-	const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
-	directionalLight.position.set(-10, 15, 10);
-	directionalLight.castShadow = true; // Enable shadow casting for this light
+	ambientLight = new THREE.AmbientLight(0xffffff, MAX_AMBIENT_INTENSITY); // Start with day intensity
+    scene.add(ambientLight);
+
+	directionalLight = new THREE.DirectionalLight(0xffffff, MAX_DIRECTIONAL_INTENSITY); // Start with day intensity
+	// NOTE: We will override the position dynamically now. Setting an initial reasonable one.
+    directionalLight.position.set(-SUN_DISTANCE * 0.5, SUN_DISTANCE * 0.7, SUN_DISTANCE * 0.3); // Initial position
+    directionalLight.castShadow = true;
 	// Configure the shadow camera properties (IMPORTANT!)
 	// This defines the box area the light covers for shadows. Adjust as needed for your scene size.
 	const shadowCamSize = PLANE_SIZE; // How wide/tall the shadow area is (related to PLANE_SIZE)
@@ -1213,8 +1312,8 @@ onMount(() => {
 	scene.add(directionalLight);
 
 	// Optional but HIGHLY recommended for debugging shadow camera bounds:
-	// const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
-	// scene.add(shadowHelper); // Add temporarily to see the shadow box
+	const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
+	scene.add(shadowHelper); // Add temporarily to see the shadow box
 
 	const groundGeometry = new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE);
 	const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x81b29a, side: THREE.DoubleSide });
@@ -1275,6 +1374,8 @@ onMount(() => {
 		window.addEventListener('beforeunload', handleBeforeUnload);
 	}
 
+	// *** Trigger initial Day/Night update ***
+    updateDayNightCycle(); // Set initial state based on current time
 	// Perform initial resize and render
 	performResize(); // Calls requestRender
 	clock.start();
