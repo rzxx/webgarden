@@ -13,5 +13,6 @@ export const selectedAction = writable<SelectedAction>(null);
 export const availablePlants = [
     { id: 'fern', name: 'Fern' },
     { id: 'cactus', name: 'Cactus' },
+    { id: 'bush', name: 'Bush' },
     // Add more plant types here
 ];
