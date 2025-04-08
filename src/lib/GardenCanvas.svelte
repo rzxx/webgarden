@@ -83,7 +83,7 @@ const GRID_DIVISIONS = 10;
 const CELL_SIZE = PLANE_SIZE / GRID_DIVISIONS;
 const HALF_PLANE_SIZE = PLANE_SIZE / 2;
 
-const gardenVisibleSize = 20;
+const gardenVisibleSize = 30;
 
 // --- Types ---
 interface SerializableDecorInfo {
@@ -1406,6 +1406,8 @@ onMount(() => {
 	}
 
 	clock.start();
+	// Perform initial resize and render
+	performResize(); // Calls requestRender
 	// Start periodic save timer
 	saveIntervalId = window.setInterval(() => saveGardenState(), SAVE_INTERVAL_MS);
 
@@ -1415,7 +1417,7 @@ onMount(() => {
          console.log(`Started growth check interval initially (${BACKGROUND_UPDATE_INTERVAL_MS}ms)`);
     }
     if (idleDayNightCheckIntervalId === undefined) {
-         idleDayNightCheckIntervalId = window.setInterval(performIdleDayNightCheck, IDLE_DAYNIGHT_UPDATE_INTERVAL_MS);
+         idleDayNightCheckIntervalId = window.setInterval(performIdleBackgroundCheck, IDLE_DAYNIGHT_UPDATE_INTERVAL_MS);
          console.log(`Started idle day/night check interval initially (${IDLE_DAYNIGHT_UPDATE_INTERVAL_MS}ms)`);
     }
 	
@@ -1437,8 +1439,6 @@ onMount(() => {
 
 	// *** Trigger initial Day/Night update ***
 	updateDayNightCycle(); // Set initial state based on current time
-	// Perform initial resize and render
-	performResize(); // Calls requestRender
 
 	// onDestroy return function remains the same conceptually
 	return () => {
