@@ -73,7 +73,6 @@
 
 	let container: HTMLDivElement;
 	let renderer: THREE.WebGLRenderer;
-	let animationFrameId: number;
 	let scene: THREE.Scene;
 	let camera: THREE.OrthographicCamera;
 	let ground: THREE.Mesh;
@@ -92,6 +91,16 @@
 	const HALF_PLANE_SIZE = PLANE_SIZE / 2;
 
 	const gardenVisibleSize = 30;
+
+	let isRenderLoopActive: boolean = false; // Is the continuous loop running?
+	let renderRequested: boolean = false;   // Has a single frame been requested?
+	let animationFrameId: number | undefined = undefined; // Keep using the existing ID variable
+
+	// Flag to know if we are currently interacting (dragging, etc.)
+	let isInteracting: boolean = false;
+
+	// Flag to know if any plant is actively growing and needs animation
+	let activeGrowthOccurring: boolean = false;
 
 	const clock = new THREE.Clock(); // Add a clock for delta time
 
@@ -222,6 +231,45 @@
         }
     }
     // --- End Helper ---
+
+	/** Requests a single render frame if the loop isn't already active
+	 * and a frame hasn't already been requested. */
+	function requestRender() {
+		// Only request if the loop isn't running AND a frame isn't already queued
+		if (!isRenderLoopActive && !renderRequested) {
+			console.log("Requesting single render frame.");
+			renderRequested = true;
+			animationFrameId = requestAnimationFrame(renderFrame);
+		} else {
+			console.log("Render skipped (loop active or frame already requested)");
+		}
+	}
+	/** Starts the continuous render loop. */
+	function startRenderLoop() {
+		if (!isRenderLoopActive) {
+			console.log("Starting continuous render loop.");
+			isRenderLoopActive = true;
+			// Clear any pending single request, as the loop will handle it
+			renderRequested = false;
+			// Cancel any potentially pending single frame request ID
+			if (animationFrameId) cancelAnimationFrame(animationFrameId);
+			// Start the loop
+			animationFrameId = requestAnimationFrame(renderFrame);
+		}
+	}
+
+	/** Stops the continuous render loop if it's running. */
+	function stopRenderLoop() {
+		if (isRenderLoopActive) {
+			console.log("Stopping continuous render loop.");
+			isRenderLoopActive = false;
+			renderRequested = false; // Clear any request flag
+			if (animationFrameId) {
+				cancelAnimationFrame(animationFrameId);
+				animationFrameId = undefined;
+			}
+		}
+	}
 
 	/**
 	 * Updates the position, size, and color of the preview box.
@@ -359,6 +407,7 @@
 		const placeholderMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial); // Start with healthy
 		placeholderMesh.castShadow = true; // This plant mesh will cast shadows
 		placeholderMesh.receiveShadow = true; // Receives shadows from other objects
+		placeholderMesh.userData = { gridPos: { row, col } }; // Store reference to top-left
         const worldPos = gridAreaCenterToWorld(row, col, plantSize.rows, plantSize.cols); // Center of the whole area
 		const now = Date.now();
 
@@ -449,38 +498,67 @@
 			return; // Ignore if not a tool action
 		}
 
+		isInteracting = true; // Mark interaction start
+
+		// --- Raycasting Logic ---
 		const raycaster = new THREE.Raycaster();
 		const mouse = new THREE.Vector2();
 		const rect = container.getBoundingClientRect();
 		mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
 		mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 		raycaster.setFromCamera(mouse, camera);
-		const intersects = raycaster.intersectObject(ground);
+
+		// Raycast against all objects in the scene (can be optimized later if needed)
+		const intersects = raycaster.intersectObjects(scene.children, true); // `true` for recursive check
+
+		let plantInteractedWith = false; // Flag to see if we hit a plant
 
 		if (intersects.length > 0) {
-			const intersectPoint = intersects[0].point;
-			const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
+			// Loop through intersected objects (sorted by distance)
+			for (const intersect of intersects) {
+				const intersectedObject = intersect.object;
 
-			if (gridCoords) {
-                // We use the specific functions which internally resolve pointers now
-				switch (currentAction.toolType) {
-					case 'water':
-						console.log(`Attempting to water Grid Cell: Row ${gridCoords.row}, Col ${gridCoords.col}`);
-						waterPlantAt(gridCoords.row, gridCoords.col); // Will resolve pointer internally
-						break;
-					case 'remove':
-						console.log(`Attempting to remove from Grid Cell: Row ${gridCoords.row}, Col ${gridCoords.col}`);
-						removePlantAt(gridCoords.row, gridCoords.col); // Will resolve pointer internally
-						break;
-					default:
-						console.log("Unknown tool selected:", currentAction.toolType);
+				// Check if the intersected object is a Mesh and has our specific userData
+				if (intersectedObject instanceof THREE.Mesh && intersectedObject.userData.gridPos) {
+					const hitGridPos = intersectedObject.userData.gridPos as { row: number; col: number };
+
+					switch (currentAction.toolType) {
+						case 'water':
+							console.log(`Attempting to water Plant at [${hitGridPos.row}, ${hitGridPos.col}]`);
+							waterPlantAt(hitGridPos.row, hitGridPos.col); // Use the gridPos from userData
+							plantInteractedWith = true;
+							break;
+						case 'remove':
+							console.log(`Attempting to remove Plant at [${hitGridPos.row}, ${hitGridPos.col}]`);
+							removePlantAt(hitGridPos.row, hitGridPos.col); // Use the gridPos from userData
+							plantInteractedWith = true;
+							break;
+						default:
+							console.log("Unknown tool selected on plant click:", currentAction.toolType);
 					}
-			} else {
-				console.log("Clicked outside the grid area (tool action).");
-			}
-		} else {
-			console.log("No intersection with the ground plane (tool action).");
-		}
+
+					// Once we've interacted with the first plant mesh hit, stop checking
+					if (plantInteractedWith) {
+						break;
+					}
+				}
+				// Optional: Add checks here if you want to interact with other object types (like the ground)
+				// else if (intersectedObject === ground) {
+				//     console.log("Raycast hit ground.");
+				// }
+			} // End loop through intersects
+
+		} // End if intersects.length > 0
+		if (!plantInteractedWith) {
+			// console.log("Clicked on empty space or non-plant object.");
+			// You could potentially add logic here for other actions if clicking empty ground
+			// was desired for certain tools, but for water/remove, we only care about hitting plants.
+    	}
+
+		// Interaction ends immediately after the click for tools
+		isInteracting = false;
+		// If the loop was active due to growth, let renderFrame decide to stop it.
+		// If loop wasn't active, the action already requested a frame if needed.
 	}
 
 	// --- Persistence Functions ---
@@ -509,6 +587,7 @@
 
 			localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(serializableGrid));
 			// console.log("Garden state saved."); // Less verbose saving log
+			requestRender(); // Request render AFTER saving state (maybe state change needs visual update)
     	} catch (error) {
 			console.error("Failed to save garden state:", error);
     	}
@@ -540,6 +619,7 @@
 							const loadedMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial); // Start healthy
 							loadedMesh.castShadow = true; // Loaded plants should also cast shadows
 							loadedMesh.receiveShadow = true; // Receives shadows from other objects
+							loadedMesh.userData = { gridPos: { row: r, col: c } }; // Store reference to top-left
                             const plantSize = savedCell.size; // Get size from saved data
                             const worldPos = gridAreaCenterToWorld(r, c, plantSize.rows, plantSize.cols); // Center of multi-cell area
 
@@ -618,15 +698,31 @@
 			camera.bottom = -frustumHeight / 2;
 			camera.updateProjectionMatrix();
 			renderer.setSize(width, height);
+			requestRender(); // Request a frame to show the resized view
 	}
+
+	// Add handleDragEnter (Moved outside onMount)
+	function handleDragEnter(event: DragEvent) {
+		event.preventDefault();
+		if (event.dataTransfer?.types.includes('planttype')) {
+			const plantType = event.dataTransfer.getData('plantType');
+			if (plantConfigs[plantType]) {
+				draggingPlantType = plantType;
+				isInteracting = true; // START Interaction
+            	startRenderLoop();   // START Loop for preview updates
+				console.log("Dragging plant:", draggingPlantType);
+			} else { draggingPlantType = null; }
+		} else { draggingPlantType = null; }
+	}
+
 	// Keep your existing handleDragOver
 	function handleDragOver(event: DragEvent) {
 		event.preventDefault(); // Necessary to allow drop
 		if (event.dataTransfer) {
 			event.dataTransfer.dropEffect = 'copy';
 		}
-		// --- Preview Update Logic ---
-		if (!draggingPlantType) return;
+		// --- Preview Update Logic (runs inside the active loop started by dragenter) ---
+		if (!draggingPlantType || !isRenderLoopActive) return; // Ensure loop is active
 		const rect = container.getBoundingClientRect();
 		const mouseX = event.clientX - rect.left;
 		const mouseY = event.clientY - rect.top;
@@ -649,11 +745,28 @@
 		}
 		// --- End Preview Update Logic ---
 	}
+	
+	// Add handleDragLeave (Moved outside onMount)
+	function handleDragLeave(event: DragEvent) {
+		if (event.relatedTarget === null || (event.relatedTarget instanceof Node && !container.contains(event.relatedTarget))) {
+			console.log("Drag left container");
+			hidePreviewBox();
+			draggingPlantType = null;
+			isInteracting = false; // STOP Interaction
+			stopRenderLoop();    // STOP Loop (unless growth needs it, renderFrame decides)
+			// No render needed here usually, as nothing changed *on* the garden
+    	}
+	}
 
 	// Keep your existing handleDrop, but add preview hiding
 	function handleDrop(event: DragEvent) {
 		event.preventDefault();
+		const wasInteracting = isInteracting; // Store state before clearing
 		hidePreviewBox();
+		draggingPlantType = null;
+    	isInteracting = false; // STOP Interaction
+
+		let placementOccurred = false;
 		if (event.dataTransfer) {
 			const plantType = event.dataTransfer.getData('plantType');
 			if (plantType && plantConfigs[plantType]) {
@@ -669,31 +782,20 @@
 					const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
 					if (gridCoords) {
 						placeObjectAt(gridCoords.row, gridCoords.col, plantType);
+						placementOccurred = true;
 					} else { console.log("Dropped outside grid."); }
 				} else { console.log("No intersection on drop."); }
 			} else { console.log("Invalid plantType drop data:", plantType); }
 		}
-		draggingPlantType = null;
-	}
+		// Stop the loop if we were interacting (dragging)
+		if (wasInteracting) {
+        	stopRenderLoop(); // STOP loop explicitly after drag ends
+		}
 
-	// Add handleDragEnter (Moved outside onMount)
-	function handleDragEnter(event: DragEvent) {
-		event.preventDefault();
-		if (event.dataTransfer?.types.includes('planttype')) {
-			const plantType = event.dataTransfer.getData('plantType');
-			if (plantConfigs[plantType]) {
-				draggingPlantType = plantType;
-				console.log("Dragging plant:", draggingPlantType);
-			} else { draggingPlantType = null; }
-		} else { draggingPlantType = null; }
-	}
-
-	// Add handleDragLeave (Moved outside onMount)
-	function handleDragLeave(event: DragEvent) {
-		if (event.relatedTarget === null || (event.relatedTarget instanceof Node && !container.contains(event.relatedTarget))) {
-			console.log("Drag left container");
-			hidePreviewBox();
-			draggingPlantType = null;
+		// If placement didn't happen (which calls requestRender),
+		// but we stopped interacting/hid preview, request a render to be sure.
+		if (!placementOccurred) {
+			requestRender();
 		}
 	}
 
@@ -703,6 +805,82 @@
 		saveGardenState();
 	};
 
+	function renderFrame() {
+		// Reset the single frame request flag at the beginning of the frame
+		renderRequested = false;
+		animationFrameId = undefined; // Clear the ID for this frame
+
+		const now = Date.now();
+		let needsSave = false;
+		let visualChangeOccurred = false; // Track if anything visually changed this frame
+		activeGrowthOccurring = false; // Reset growth flag for this frame
+
+		// --- Live Update Loop ---
+		for (let r = 0; r < GRID_DIVISIONS; r++) {
+			for (let c = 0; c < GRID_DIVISIONS; c++) {
+				const cell = gardenGrid[r]?.[c];
+				if (cell && 'plantTypeId' in cell) {
+					const plantInfo = cell;
+					let stateChangedThisFrame = false;
+
+					// --- Check for Thirst ---
+					const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+					if (plantInfo.state === 'healthy' && (now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
+						plantInfo.state = 'needs_water';
+						stateChangedThisFrame = true;
+						needsSave = true; // Became thirsty, save state
+						visualChangeOccurred = true; // Thirst changes appearance
+					}
+
+					// --- Growth Update ---
+					const growthHappened = updatePlantGrowth(plantInfo);
+					if (growthHappened) {
+						visualChangeOccurred = true; // Growth changes appearance
+					}
+
+					// Track if *any* healthy plant is still growing
+					if (plantInfo.state === 'healthy' && plantInfo.growthProgress < 1.0) {
+						activeGrowthOccurring = true;
+					}
+
+					// --- Update Visuals ---
+					// Only update Three.js visuals if state changed or growth happened
+					if (stateChangedThisFrame || growthHappened) {
+						updatePlantVisuals(plantInfo);
+						// No need to set visualChangeOccurred again, already covered
+					}
+				}
+			}
+		}
+
+		// --- Save State ---
+		if (needsSave) {
+			saveGardenState();
+		}
+
+		// --- Render Scene ---
+		// We always render if this function is called, either by the loop or requestRender
+		// console.log("Rendering frame"); // Can be noisy, use for debugging
+		renderer.render(scene, camera);
+
+		// --- Decide whether to continue the loop ---
+		// Continue if:
+		// 1. The loop is *supposed* to be active (isRenderLoopActive is true)
+		// AND
+		// 2. EITHER the user is interacting OR there's active growth animation needed.
+		const shouldContinueLoop = isRenderLoopActive && (isInteracting || activeGrowthOccurring);
+
+		if (shouldContinueLoop) {
+			// Request the next frame for the continuous loop
+			animationFrameId = requestAnimationFrame(renderFrame);
+		} else if (isRenderLoopActive) {
+			// The loop was active, but conditions to continue are no longer met. Stop it.
+			console.log("Auto-stopping render loop (no interaction or active growth).");
+			stopRenderLoop(); // This also cancels any potential pending animationFrameId
+		}
+		// If !isRenderLoopActive, this was a single requested frame, so we do nothing more.
+	}
+
 	onMount(() => {
 		if (!container) return;
 
@@ -710,9 +888,14 @@
 		scene.background = new THREE.Color(0xf4f1de);
 
 		// Initialize or Load State BEFORE setting up camera/renderer etc.
-		const loaded = loadGardenState();
+		const loaded = loadGardenState(); // Calls placeObjectAt which calls requestRender
 		if (!loaded) {
-			initializeGrid(); // Ensure grid is initialized if load fails/no data
+			initializeGrid();
+			requestRender(); // Request render for empty initialized grid
+		} else {
+			// loadGardenState calls placeObjectAt -> updatePlantVisuals internally
+			// We still need one final render after load is complete
+			requestRender();
 		}
 
 		camera = new THREE.OrthographicCamera( -1, 1, 1, -1, 1, 1000 );
@@ -735,7 +918,7 @@
 		directionalLight.castShadow = true; // Enable shadow casting for this light
 		// Configure the shadow camera properties (IMPORTANT!)
 		// This defines the box area the light covers for shadows. Adjust as needed for your scene size.
-		const shadowCamSize = 20; // How wide/tall the shadow area is (related to PLANE_SIZE)
+		const shadowCamSize = PLANE_SIZE; // How wide/tall the shadow area is (related to PLANE_SIZE)
 		directionalLight.shadow.camera.left = -shadowCamSize;
 		directionalLight.shadow.camera.right = shadowCamSize;
 		directionalLight.shadow.camera.top = shadowCamSize;
@@ -793,62 +976,6 @@
 			previewGroup.add(plane);
 		}
 		// --- End Preview Bounding Box Setup ---
-
-		const animate = () => {
-			animationFrameId = requestAnimationFrame(animate);
-			const now = Date.now();
-            let needsSave = false; // Flag to save only once per frame if needed
-
-			// Live Update Loop (Iterate smartly)
-			for (let r = 0; r < GRID_DIVISIONS; r++) {
-				for (let c = 0; c < GRID_DIVISIONS; c++) {
-                    // Only process actual PlantInfo objects, skip nulls and pointers
-					const cell = gardenGrid[r]?.[c];
-					if (cell && 'plantTypeId' in cell) { // Check if it's a PlantInfo
-						const plantInfo = cell; // Already the main object
-                        let stateChangedThisFrame = false;
-
-						// Check for Thirst
-						const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
-						if (plantInfo.state === 'healthy' && (now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
-							plantInfo.state = 'needs_water';
-							// console.log(`Plant at [${r},${c}] needs water!`); // Can be verbose
-							stateChangedThisFrame = true;
-						}
-
-						// Growth Update
-						const growthHappened = updatePlantGrowth(plantInfo);
-
-						// Update visuals if state changed OR growth happened
-						if (stateChangedThisFrame || growthHappened) {
-							updatePlantVisuals(plantInfo);
-						}
-
-                        // Flag for saving if state flipped to thirsty this frame
-                        if (stateChangedThisFrame) {
-                           needsSave = true;
-                        }
-					}
-				}
-			}
-
-            // Save once after the loop if any plant became thirsty
-            if (needsSave) {
-                 saveGardenState();
-            }
-
-			renderer.render(scene, camera);
-		};
-
-		window.addEventListener('resize', handleResize);
-		handleResize();
-		clock.start();
-		animate();
-
-		saveIntervalId = window.setInterval(() => {
-            // console.log("Periodic save triggered."); // Optional log for periodic save
-            saveGardenState();
-        }, SAVE_INTERVAL_MS);
 
 		// --- Drag and Drop Setup (MODIFIED) ---
 
@@ -972,13 +1099,54 @@
 			console.log('beforeunload triggered, saving state...');
 			saveGardenState(); // Ensure final save
     	};
+		// --- Other Listeners ---
+		window.addEventListener('resize', handleResize); // Will request render
 		if (typeof window !== 'undefined') {
-       		window.addEventListener('beforeunload', handleBeforeUnload);
-    	}
+			window.addEventListener('beforeunload', handleBeforeUnload);
+		}
+
+		// Start periodic save timer
+		saveIntervalId = window.setInterval(() => saveGardenState(), SAVE_INTERVAL_MS);
+
+		// Perform initial resize and render
+		handleResize(); // Calls requestRender
+
+		// Don't start the loop here automatically anymore
+		// renderFrame(); // Remove initial direct call
+		// animate(); // Remove this too
+		clock.start();
+
+		// Check if the loop needs to start based on initial loaded state
+		// Need to recalculate activeGrowthOccurring after potential load
+		activeGrowthOccurring = false;
+		for (let r = 0; r < GRID_DIVISIONS; r++) {
+			for (let c = 0; c < GRID_DIVISIONS; c++) {
+				const cell = gardenGrid[r]?.[c];
+				if (cell && 'plantTypeId' in cell && cell.state === 'healthy' && cell.growthProgress < 1.0) {
+					activeGrowthOccurring = true;
+					break; // Found one, no need to check further
+				}
+			}
+			if(activeGrowthOccurring) break;
+		}
+		if (activeGrowthOccurring) {
+			startRenderLoop(); // Start loop if plants loaded in a growing state
+		}
+
+		// onDestroy return function remains the same conceptually
+		return () => {
+			// The onDestroy Svelte function handles the main cleanup now
+			// This returned function is mostly for things *only* added in onMount
+			console.log("onMount cleanup function running");
+			stopRenderLoop(); // Ensure loop is stopped here too
+			// Remove listeners added *specifically* within onMount if any were left
+			// (most are handled by onDestroy now)
+		};
 	});
 
 	// ... (Keep onDestroy as is, including material/geometry disposal and listener removal) ...
 	onDestroy(() => {
+		stopRenderLoop(); // Explicitly stop the loop on destroy
 		if (typeof window !== 'undefined') {
 			window.removeEventListener('beforeunload', handleBeforeUnload);
 		}
@@ -988,7 +1156,10 @@
 			clearInterval(saveIntervalId);
 		}
 
-		cancelAnimationFrame(animationFrameId);
+		if (animationFrameId !== undefined){
+			cancelAnimationFrame(animationFrameId);
+		}
+		
 		window.removeEventListener('resize', handleResize);
 		if (renderer) {
 			renderer.dispose();
