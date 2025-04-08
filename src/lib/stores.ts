@@ -16,3 +16,9 @@ export const availablePlants = [
     { id: 'bush', name: 'Bush' },
     // Add more plant types here
 ];
+
+// Define available decor (can be expanded later)
+export const availableDecor = [
+    { id: 'box', name: 'Box' },
+    // Add more decor types here
+];

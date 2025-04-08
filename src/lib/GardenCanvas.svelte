@@ -24,6 +24,35 @@ const plantConfigs: Record<string, PlantConfig> = {
 };
 // --- End Plant Configuration ---
 
+// --- Decor Configuration ---
+interface DecorConfig {
+    size: { rows: number; cols: number };
+    // How to represent the visual? Start simple, expand later.
+    // Option 1: Placeholder identifier (like plants for now)
+    placeholderColor?: number;
+    // Option 2: Geometry/Material directly (more complex setup)
+    // geometry?: THREE.BufferGeometry;
+    // material?: THREE.Material | THREE.Material[];
+    // Option 3: Model path (needs GLTFLoader)
+    // modelPath?: string;
+    defaultRotationY?: number; // Default orientation in radians
+}
+
+const decorConfigs: Record<string, DecorConfig> = {
+    box: { size: { rows: 1, cols: 1 }, placeholderColor: 0x403d39, defaultRotationY: 0 },
+};
+// --- End Decor Configuration ---
+
+// --- Decor Instance Data Type ---
+interface DecorInfo {
+    decorTypeId: string; // 'fence_post', 'wooden_box', etc.
+    size: { rows: number; cols: number };
+    mesh?: THREE.Mesh;
+    gridPos: { row: number; col: number }; // Top-left grid position
+    rotationY: number; // Instance-specific rotation
+}
+// --- End Decor Instance Data ---
+
 // --- Grid Cell Data Type ---
 interface PlantInfo {
 	plantTypeId: string;
@@ -40,44 +69,8 @@ interface PlantInfo {
 
 // Grid cell can be: empty, the main plant info, or a pointer to the main info
 type GridPointer = { pointerTo: { row: number; col: number } };
-type GridCell = PlantInfo | GridPointer | null;
+type GridCell = PlantInfo | DecorInfo | GridPointer | null;
 // --- End Grid Cell Data ---
-
-// --- Types ---
-interface SerializablePlantInfo {
-	plantTypeId: string;
-	state: 'healthy' | 'needs_water';
-	growthProgress: number;
-	lastUpdateTime: number;
-	lastWateredTime: number;
-	size: { rows: number; cols: number };
-	// We don't save gridPos directly, it's derived from the save structure
-}
-type SerializableGridCell = SerializablePlantInfo | null;
-type SerializableGardenGrid = SerializableGridCell[][];
-// --- End Types ---
-
-/// --- Bounding Boxes ---
-let draggingPlantType: string | null = null; // Stores the ID of the plant being dragged
-let previewGroup: THREE.Group | null = null; // Group to hold preview plane meshes
-let previewMeshes: THREE.Mesh[] = []; // Array to hold reusable preview plane meshes
-const MAX_PREVIEW_CELLS = 16; // Max anticipated size (e.g., 4x4), adjust if needed
-
-// Materials for the preview
-let validPlacementMaterial: THREE.MeshBasicMaterial;
-let invalidPlacementMaterial: THREE.MeshBasicMaterial;
-
-// To optimize updates, track the last grid cell the preview was drawn at
-let lastPreviewGridPos: { row: number; col: number } | null = null;
-/// --- End Bounding Boxes ---
-
-let container: HTMLDivElement;
-let renderer: THREE.WebGLRenderer;
-let scene: THREE.Scene;
-let camera: THREE.OrthographicCamera;
-let ground: THREE.Mesh;
-let saveIntervalId: number | undefined = undefined;
-const SAVE_INTERVAL_MS = 15000;
 
 // --- Grid Data ---
 let gardenGrid: GridCell[][] = [];
@@ -91,6 +84,80 @@ const CELL_SIZE = PLANE_SIZE / GRID_DIVISIONS;
 const HALF_PLANE_SIZE = PLANE_SIZE / 2;
 
 const gardenVisibleSize = 30;
+
+// --- Types ---
+interface SerializableDecorInfo {
+    decorTypeId: string;
+    size: { rows: number; cols: number };
+    rotationY: number;
+    // Add 'type' field for easier loading differentiation
+    type: 'decor';
+}
+
+interface SerializablePlantInfo {
+	plantTypeId: string;
+	state: 'healthy' | 'needs_water';
+	growthProgress: number;
+	lastUpdateTime: number;
+	lastWateredTime: number;
+	size: { rows: number; cols: number };
+	type: 'plant'; // Explicit type marker
+	// We don't save gridPos directly, it's derived from the save structure
+}
+type SerializableGridCell = SerializablePlantInfo | SerializableDecorInfo | null;
+type SerializableGardenGrid = SerializableGridCell[][];
+// --- End Types ---
+
+/// --- Bounding Boxes ---
+interface DraggingItem {
+    objectType: 'plant' | 'decor';
+    typeId: string;
+}
+let draggingItem: DraggingItem | null = null; // Stores the full info of the item being dragged
+let previewGroup: THREE.Group | null = null; // Group to hold preview plane meshes
+let previewMeshes: THREE.Mesh[] = []; // Array to hold reusable preview plane meshes
+const MAX_PREVIEW_CELLS = 16; // Max anticipated size (e.g., 4x4), adjust if needed
+
+// Materials for the preview
+let validPlacementMaterial: THREE.MeshBasicMaterial;
+let invalidPlacementMaterial: THREE.MeshBasicMaterial;
+
+// --- Placeholder Object Geometry/Materials ---
+const placeholderGeometry = new THREE.BoxGeometry(CELL_SIZE * 0.5, CELL_SIZE * 0.5, CELL_SIZE * 0.5);
+const healthyMaterial = new THREE.MeshStandardMaterial({ color: 0xf2cc8f });
+const thirstyMaterial = new THREE.MeshStandardMaterial({ color: 0xdad7cd });
+// --- End Placeholder Materials ---
+
+// --- Placeholder Decor Materials (Example) ---
+// Create materials based on placeholderColor in config, or use specific ones
+const decorMaterialsCache: Record<string, THREE.MeshStandardMaterial> = {};
+function getDecorMaterial(typeId: string): THREE.MeshStandardMaterial {
+    const config = decorConfigs[typeId];
+    if (!config) {
+        return new THREE.MeshStandardMaterial({ color: 0xcccccc }); // Default grey
+    }
+    const color = config.placeholderColor ?? 0xcccccc;
+    const cacheKey = `${color}`; // Simple cache key based on color hex
+    if (!decorMaterialsCache[cacheKey]) {
+        decorMaterialsCache[cacheKey] = new THREE.MeshStandardMaterial({ color: color });
+    }
+    return decorMaterialsCache[cacheKey];
+}
+// Use the existing placeholderGeometry for now for decor, or create specifics later
+const decorGeometry = placeholderGeometry; // Reuse box for simplicity initially
+// --- End Placeholder Decor Materials ---
+
+// To optimize updates, track the last grid cell the preview was drawn at
+let lastPreviewGridPos: { row: number; col: number } | null = null;
+/// --- End Bounding Boxes ---
+
+let container: HTMLDivElement;
+let renderer: THREE.WebGLRenderer;
+let scene: THREE.Scene;
+let camera: THREE.OrthographicCamera;
+let ground: THREE.Mesh;
+let saveIntervalId: number | undefined = undefined;
+const SAVE_INTERVAL_MS = 15000;
 
 // Configuration for background updates (can be adjusted or made dynamic later)
 const BACKGROUND_UPDATE_INTERVAL_MS = 500; // Check for growth/dynamics every 500ms (2fps) - adjust as needed
@@ -216,12 +283,6 @@ function initializeGrid() {
 	console.log("Initialized Grid:", gardenGrid);
 }
 
-// --- Placeholder Object Geometry/Materials ---
-const placeholderGeometry = new THREE.BoxGeometry(CELL_SIZE * 0.5, CELL_SIZE * 0.5, CELL_SIZE * 0.5);
-const healthyMaterial = new THREE.MeshStandardMaterial({ color: 0xf2cc8f });
-const thirstyMaterial = new THREE.MeshStandardMaterial({ color: 0xdad7cd });
-// --- End Placeholder Materials ---
-
 // --- Function to Update Plant Visuals (Scale and Material) ---
 function updatePlantVisuals(plantInfo: PlantInfo) {
 	if (!plantInfo.mesh) return;
@@ -263,8 +324,36 @@ function isAreaFree(startRow: number, startCol: number, numRows: number, numCols
 }
 // --- End Helper ---
 
+// --- Generic Helper to Get Object Info (Resolves Pointers) ---
+function getGridObjectInfoAt(row: number, col: number): PlantInfo | DecorInfo | null {
+    if (row < 0 || row >= GRID_DIVISIONS || col < 0 || col >= GRID_DIVISIONS) return null;
+
+    const cell = gardenGrid[row][col];
+    if (!cell) {
+        return null; // Empty
+    } else if ('pointerTo' in cell) {
+        // Follow pointer
+        const target = cell.pointerTo;
+        const targetCell = gardenGrid[target.row]?.[target.col];
+        // Check if target cell actually contains PlantInfo or DecorInfo
+        if (targetCell && (('plantTypeId' in targetCell) || ('decorTypeId' in targetCell))) {
+            return targetCell as PlantInfo | DecorInfo;
+        } else {
+             console.error(`Pointer at [${row}, ${col}] points to invalid cell [${target.row}, ${target.col}]`);
+            return null;
+        }
+    } else if (('plantTypeId' in cell) || ('decorTypeId' in cell)) {
+        // It's the main PlantInfo or DecorInfo object
+        return cell;
+    }
+    // Should not happen with defined types, but acts as safety net
+    console.warn("Cell content at [${row}, ${col}] is unexpected:", cell);
+    return null;
+}
+// --- End Generic Helper ---
+
 // --- Helper to get PlantInfo, resolving pointers ---
-function getPlantInfoAt(row: number, col: number): PlantInfo | null {
+/* function getPlantInfoAt(row: number, col: number): PlantInfo | null {
 	if (row < 0 || row >= GRID_DIVISIONS || col < 0 || col >= GRID_DIVISIONS) return null; // Out of bounds
 
 	const cell = gardenGrid[row][col];
@@ -285,7 +374,7 @@ function getPlantInfoAt(row: number, col: number): PlantInfo | null {
 		// It's the main PlantInfo object
 		return cell;
 	}
-}
+} */
 // --- End Helper ---
 
 /** Requests a single render frame if the loop isn't already active
@@ -370,16 +459,26 @@ function stopRenderLoop() {
 /**
  * Updates the position, size, and color of the preview box.
  */
-function updatePreviewBox(row: number, col: number, plantType: string) {
-	if (!previewGroup || !plantConfigs[plantType]) {
+function updatePreviewBox(row: number, col: number, objectType: 'plant' | 'decor', typeId: string) {
+	if (!previewGroup) {
 		hidePreviewBox(); // Hide if something is wrong
 		return;
 	}
 
-	const config = plantConfigs[plantType];
+	// Get config based on objectType
+    const config = objectType === 'plant'
+        ? plantConfigs[typeId]
+        : decorConfigs[typeId];
+
+    // Ensure config exists
+    if (!config) {
+        console.warn(`Preview: Config not found for ${objectType} ${typeId}`);
+        hidePreviewBox();
+        return;
+    }
 	const size = config.size;
-	const isValid = isAreaFree(row, col, size.rows, size.cols);
-	const material = isValid ? validPlacementMaterial : invalidPlacementMaterial;
+    const isValid = isAreaFree(row, col, size.rows, size.cols);
+    const material = isValid ? validPlacementMaterial : invalidPlacementMaterial;
 
 	let meshIndex = 0;
 	for (let rOffset = 0; rOffset < size.rows; rOffset++) {
@@ -398,7 +497,7 @@ function updatePreviewBox(row: number, col: number, plantType: string) {
 				mesh.visible = true; // Make this specific plane visible
 				meshIndex++;
 			} else if (meshIndex >= previewMeshes.length) {
-				console.warn("Need more meshes in preview pool for plant size!");
+				console.warn("Need more meshes in preview pool!");
 			}
 			// If cell is out of bounds, don't draw a preview mesh for it
 		}
@@ -452,7 +551,7 @@ function updatePlantGrowth(plantInfo: PlantInfo): boolean {
 // --- End Function to Update Plant Growth ---
 
 // --- Function to Remove Plant (Handles Multi-Cell) ---
-function removePlantAt(row: number, col: number) {
+/* function removePlantAt(row: number, col: number) {
 	// 1. Find the actual PlantInfo, resolving pointers
 	const plantInfo = getPlantInfoAt(row, col);
 
@@ -485,11 +584,49 @@ function removePlantAt(row: number, col: number) {
 	} else {
 		console.log(`No plant found at or pointed to by [${row}, ${col}] to remove.`);
 	}
-}
+} */
 // --- End Function to Remove Plant ---
 
+// --- Function to Remove Grid Object (Replaces removePlantAt) ---
+function removeGridObjectAt(row: number, col: number) {
+    // 1. Find the actual object info (Plant or Decor)
+    const gridObjectInfo = getGridObjectInfoAt(row, col);
+
+    if (gridObjectInfo?.mesh) {
+        const objectType = 'plantTypeId' in gridObjectInfo ? 'plant' : 'decor';
+        const typeId = 'plantTypeId' in gridObjectInfo ? gridObjectInfo.plantTypeId : gridObjectInfo.decorTypeId;
+        console.log(`Removing ${objectType} ${typeId} originating at [${gridObjectInfo.gridPos.row}, ${gridObjectInfo.gridPos.col}]`);
+
+        // 2. Get size and original position
+        const { size, gridPos } = gridObjectInfo;
+
+        // 3. Remove Mesh & Dispose Geometry (Material disposal handled globally if shared)
+        scene.remove(gridObjectInfo.mesh);
+        gridObjectInfo.mesh.geometry.dispose(); // Dispose instance geometry
+        gridObjectInfo.mesh = undefined; // Clear reference
+
+        // 4. Clear Grid Data
+        for (let rOffset = 0; rOffset < size.rows; rOffset++) {
+            for (let cOffset = 0; cOffset < size.cols; cOffset++) {
+                const targetRow = gridPos.row + rOffset;
+                const targetCol = gridPos.col + cOffset;
+                if (targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
+                    gardenGrid[targetRow][targetCol] = null;
+                }
+            }
+        }
+
+        // 5. Save State
+        saveGardenState();
+
+    } else {
+        console.log(`No grid object found at or pointed to by [${row}, ${col}] to remove.`);
+    }
+}
+// --- End Function to Remove Grid Object ---
+
 // --- Function to Place Object (Handles Multi-Cell) ---
-function placeObjectAt(row: number, col: number, plantTypeId: string) {
+/* function placeObjectAt(row: number, col: number, plantTypeId: string) {
 	const config = plantConfigs[plantTypeId] ?? plantConfigs.default;
 	const plantSize = config.size;
 
@@ -550,15 +687,116 @@ function placeObjectAt(row: number, col: number, plantTypeId: string) {
 
 	// 6. Save state
 	saveGardenState();
-}
+} */
 // --- End Function to Place Object ---
+
+// --- Function to Place Grid Object (Replaces placeObjectAt) ---
+// typeId can be plantTypeId or decorTypeId
+function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string) {
+    const config = objectType === 'plant'
+        ? plantConfigs[typeId]
+        : decorConfigs[typeId];
+
+    if (!config) {
+        console.error(`No config found for ${objectType} with id ${typeId}`);
+        return;
+    }
+
+    const objectSize = config.size;
+
+    // 1. Check Area Freedom
+    if (!isAreaFree(row, col, objectSize.rows, objectSize.cols)) {
+        console.log(`Cannot place ${typeId} of size ${objectSize.rows}x${objectSize.cols} at [${row}, ${col}], area not free.`);
+        return;
+    }
+
+    // 2. Create Mesh
+    let newMesh: THREE.Mesh;
+    let newGridObject: PlantInfo | DecorInfo;
+    const now = Date.now();
+    const worldPos = gridAreaCenterToWorld(row, col, objectSize.rows, objectSize.cols);
+
+    const userData = { gridPos: { row, col }, objectType: objectType, typeId: typeId }; // Add typeId for convenience
+
+    if (objectType === 'plant') {
+        newMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial); // Use plant material
+        newMesh.castShadow = true;
+        newMesh.receiveShadow = true;
+        newMesh.userData = userData;
+
+        const newPlant: PlantInfo = {
+            plantTypeId: typeId,
+            state: 'healthy',
+            growthProgress: 0.0,
+            lastUpdateTime: now,
+            lastWateredTime: now,
+            size: { ...objectSize },
+            gridPos: { row, col },
+            mesh: newMesh
+        };
+        newGridObject = newPlant;
+        updatePlantVisuals(newPlant); // Set initial scale, Y position for plants
+
+    } else { // objectType === 'decor'
+        const decorConfig = config as DecorConfig; // Type assertion
+        const material = getDecorMaterial(typeId); // Get decor material
+        newMesh = new THREE.Mesh(decorGeometry, material); // Use decor geometry/material
+        newMesh.castShadow = true; // Decor can cast shadows
+        newMesh.receiveShadow = true; // Decor can receive shadows
+        newMesh.userData = userData;
+        const rotationY = decorConfig.defaultRotationY ?? 0; // Apply default rotation
+
+        const newDecor: DecorInfo = {
+            decorTypeId: typeId,
+            size: { ...objectSize },
+            gridPos: { row, col },
+            mesh: newMesh,
+            rotationY: rotationY,
+        };
+        newGridObject = newDecor;
+        newMesh.rotation.y = rotationY; // Set initial rotation
+        // Decor likely sits flat, adjust Y based on geometry if needed
+        // Assuming box geometry centered at origin:
+        const decorHeight = (CELL_SIZE * 0.5); // Placeholder height
+        newMesh.position.y = decorHeight / 2; // Adjust Y position for decor
+    }
+
+    // 4. Set Mesh Position (Common for both)
+    newMesh.position.x = worldPos.x;
+    newMesh.position.z = worldPos.z;
+    // Y position set individually above based on type
+
+    scene.add(newMesh);
+
+    // 5. Update Grid Data (Common)
+    gardenGrid[row][col] = newGridObject;
+    console.log(`Placed main info for ${objectType} ${typeId} at [${row}, ${col}].`);
+
+    // Place pointers (Common)
+    for (let rOffset = 0; rOffset < objectSize.rows; rOffset++) {
+        for (let cOffset = 0; cOffset < objectSize.cols; cOffset++) {
+            if (rOffset === 0 && cOffset === 0) continue;
+            const targetRow = row + rOffset;
+            const targetCol = col + cOffset;
+            if (targetRow < GRID_DIVISIONS && targetCol < GRID_DIVISIONS) {
+                gardenGrid[targetRow][targetCol] = { pointerTo: { row, col } };
+            }
+        }
+    }
+
+    // 6. Save state
+    saveGardenState();
+}
+// --- End Function to Place Grid Object ---
 
 // --- Function to Water Plant (Uses Pointer Resolution) ---
 function waterPlantAt(row: number, col: number) {
 	// 1. Find the actual PlantInfo, resolving pointers
-	const plantInfo = getPlantInfoAt(row, col);
+	const gridObjectInfo = getGridObjectInfoAt(row, col);
 
-	if (plantInfo) {
+	// 2. Check if it's actually a PlantInfo object
+	if (gridObjectInfo && 'plantTypeId' in gridObjectInfo) {
+		const plantInfo = gridObjectInfo; // We know it's a plant now
 		console.log(`Watering plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] (triggered from [${row}, ${col}])`);
 		let stateChanged = false;
 		let timeUpdated = false;
@@ -566,25 +804,27 @@ function waterPlantAt(row: number, col: number) {
 
 		if (plantInfo.state === 'needs_water') {
 			plantInfo.state = 'healthy';
-			plantInfo.lastUpdateTime = now;
-			plantInfo.lastWateredTime = now;
+            plantInfo.lastUpdateTime = now; // Reset growth timer base
+            plantInfo.lastWateredTime = now; // Update last watered time
 			console.log(`   Plant is now healthy.`);
 			updatePlantVisuals(plantInfo); // Update visuals
 			stateChanged = true;
 			timeUpdated = true;
 		} else {
-			plantInfo.lastWateredTime = now; // Still reset thirst timer
+			plantInfo.lastWateredTime = now; // Reset thirst timer
 			console.log(`   Plant was already healthy, reset thirst timer.`);
 			timeUpdated = true;
-			// Optional: Add feedback even if already healthy
+			// TODO: Add feedback even if already healthy
 		}
 
 		if (stateChanged || timeUpdated) {
 			saveGardenState();
 		}
-	} else {
-		console.log(`No plant found at or pointed to by [${row}, ${col}] to water.`);
-	}
+	} else if (gridObjectInfo) {
+         console.log(`Cannot water object at [${row}, ${col}], it's other object.`);
+    } else {
+        console.log(`No object found at or pointed to by [${row}, ${col}] to water.`);
+    }
 }
 // --- End Function to Water Plant ---
 
@@ -607,36 +847,39 @@ function handleCanvasPointerDown(event: PointerEvent) {
 	// Raycast against all objects in the scene (can be optimized later if needed)
 	const intersects = raycaster.intersectObjects(scene.children, true); // `true` for recursive check
 
-	let plantInteractedWith = false; // Flag to see if we hit a plant
-
+	let interactionOccurred = false;
 	if (intersects.length > 0) {
 		// Loop through intersected objects (sorted by distance)
 		for (const intersect of intersects) {
 			const intersectedObject = intersect.object;
 
 			// Check if the intersected object is a Mesh and has our specific userData
-			if (intersectedObject instanceof THREE.Mesh && intersectedObject.userData.gridPos) {
+			if (intersectedObject instanceof THREE.Mesh && intersectedObject.userData.gridPos && intersectedObject.userData.objectType) {
 				const hitGridPos = intersectedObject.userData.gridPos as { row: number; col: number };
+                const objectType = intersectedObject.userData.objectType as 'plant' | 'decor';
+
+				console.log(`Raycast hit ${objectType} mesh associated with grid pos [${hitGridPos.row}, ${hitGridPos.col}]`);
 
 				switch (currentAction.toolType) {
 					case 'water':
+					if (objectType === 'plant') { // Can only water plants
 						console.log(`Attempting to water Plant at [${hitGridPos.row}, ${hitGridPos.col}]`);
-						waterPlantAt(hitGridPos.row, hitGridPos.col); // Use the gridPos from userData
-						plantInteractedWith = true;
-						break;
+						waterPlantAt(hitGridPos.row, hitGridPos.col);
+						interactionOccurred = true;
+					} else {
+						console.log("Water tool clicked on decor, doing nothing.");
+					}
+					break;
 					case 'remove':
-						console.log(`Attempting to remove Plant at [${hitGridPos.row}, ${hitGridPos.col}]`);
-						removePlantAt(hitGridPos.row, hitGridPos.col); // Use the gridPos from userData
-						plantInteractedWith = true;
-						break;
+						// Can remove both plants and decor
+                        console.log(`Attempting to remove ${objectType} at [${hitGridPos.row}, ${hitGridPos.col}]`);
+                        removeGridObjectAt(hitGridPos.row, hitGridPos.col); // Use generic remover
+                        interactionOccurred = true;
+                        break;
 					default:
 						console.log("Unknown tool selected on plant click:", currentAction.toolType);
-				}
-
-				// Once we've interacted with the first plant mesh hit, stop checking
-				if (plantInteractedWith) {
-					break;
-				}
+			}
+			if (interactionOccurred) break; // Interact with first hit object only
 			}
 			// Optional: Add checks here if you want to interact with other object types (like the ground)
 			// else if (intersectedObject === ground) {
@@ -645,39 +888,34 @@ function handleCanvasPointerDown(event: PointerEvent) {
 		} // End loop through intersects
 
 	} // End if intersects.length > 0
-	if (!plantInteractedWith) {
-		// console.log("Clicked on empty space or non-plant object.");
-		// You could potentially add logic here for other actions if clicking empty ground
-		// was desired for certain tools, but for water/remove, we only care about hitting plants.
-	}
-
-	// Interaction ends immediately after the click for tools
-	isInteracting = false;
-	// If the loop was active due to growth, let renderFrame decide to stop it.
-	// If loop wasn't active, the action already requested a frame if needed.
+	isInteracting = false; // Interaction ends immediately for tools
 }
 
 // --- Persistence Functions ---
-
 function saveGardenState() {
 	try {
 		if (typeof localStorage === 'undefined') {
 			console.warn("localStorage not available, cannot save state.");
 			return;
 		}
-		// Create a serializable grid containing ONLY the main PlantInfo objects
+		// Create a serializable grid containing ONLY the serializable info objects
 		const serializableGrid: SerializableGardenGrid = Array(GRID_DIVISIONS).fill(null).map(() => Array(GRID_DIVISIONS).fill(null));
 
 		for (let r = 0; r < GRID_DIVISIONS; r++) {
 			for (let c = 0; c < GRID_DIVISIONS; c++) {
 				const cell = gardenGrid[r][c];
 				// Only save if it's the main PlantInfo (not null, not a pointer)
-				if (cell && 'plantTypeId' in cell) {
-					// eslint-disable-next-line @typescript-eslint/no-unused-vars
-					const { mesh, gridPos, ...rest } = cell; // Exclude mesh and gridPos
-					serializableGrid[r][c] = rest;
-				}
-				// Pointers and nulls are implicitly saved as null
+				if (!cell || 'pointerTo' in cell) {
+                    serializableGrid[r][c] = null; // Save pointers/null as null
+                } else if ('plantTypeId' in cell) {
+                    // It's PlantInfo
+                    const { mesh, gridPos, ...rest } = cell;
+                    serializableGrid[r][c] = { ...rest, type: 'plant' }; // Add type:'plant'
+                } else if ('decorTypeId' in cell) {
+                    // It's DecorInfo
+                    const { mesh, gridPos, ...rest } = cell;
+                    serializableGrid[r][c] = { ...rest, type: 'decor' }; // Add type:'decor'
+                }
 			}
 		}
 
@@ -693,7 +931,8 @@ function loadGardenState() {
 	try {
 		const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
 		if (savedData) {
-			const loadedGrid: SerializableGardenGrid = JSON.parse(savedData);
+			// Explicitly type the loaded grid based on our SerializableGridCell union
+            const loadedGrid: SerializableGridCell[][] = JSON.parse(savedData);
 			console.log("Loading saved garden state...");
 
 			// Initialize gardenGrid first (important!)
@@ -702,67 +941,95 @@ function loadGardenState() {
 			for (let r = 0; r < GRID_DIVISIONS; r++) {
 				for (let c = 0; c < GRID_DIVISIONS; c++) {
 					const savedCell = loadedGrid[r]?.[c];
-					// Only process if a saved plant exists at this top-left position
+
+					// Only process if not null
 					if (savedCell) {
-						// Check if this spot is already occupied (e.g., by a pointer from a previously loaded plant)
+						// Check if this spot is already occupied (e.g., by a pointer from a previously loaded object)
 						// This shouldn't happen with correct saving, but good safety check.
 						if (gardenGrid[r][c] !== null) {
 							console.warn(`Load conflict: Cell [${r}, ${c}] should be empty but is not. Skipping load for saved data at this position.`);
 							continue;
 						}
 
-						// 1. Recreate Mesh
-						const loadedMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial); // Start healthy
-						loadedMesh.castShadow = true; // Loaded plants should also cast shadows
-						loadedMesh.receiveShadow = true; // Receives shadows from other objects
-						loadedMesh.userData = { gridPos: { row: r, col: c } }; // Store reference to top-left
-						const plantSize = savedCell.size; // Get size from saved data
-						const worldPos = gridAreaCenterToWorld(r, c, plantSize.rows, plantSize.cols); // Center of multi-cell area
+						const objectSize = savedCell.size;
+                        const worldPos = gridAreaCenterToWorld(r, c, objectSize.rows, objectSize.cols);
+                        let newMesh: THREE.Mesh;
+                        let newGridObject: PlantInfo | DecorInfo;
 
-						// 2. Create the full PlantInfo object
-						const loadedPlant: PlantInfo = {
-							...savedCell, // Spread loaded data (type, state, progress, times, size)
-							mesh: loadedMesh,
-							gridPos: { row: r, col: c } // Reconstruct gridPos
-						};
+                        const userData = { gridPos: { row: r, col: c }, objectType: savedCell.type, typeId: 'plantTypeId' in savedCell ? savedCell.plantTypeId : savedCell.decorTypeId };
 
-						// 3. Calculate Offline Growth & Check Thirst BEFORE setting visuals
-						updatePlantGrowth(loadedPlant);
-						const now = Date.now();
-						const config = plantConfigs[loadedPlant.plantTypeId] ?? plantConfigs.default;
-						if (loadedPlant.state === 'healthy' && (now - loadedPlant.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
-							loadedPlant.state = 'needs_water';
-						}
+                        // --- Differentiate based on loaded 'type' ---
+                        if (savedCell.type === 'plant') {
+                            const plantData = savedCell; // Now correctly typed
+                            newMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial);
+                            newMesh.castShadow = true;
+                            newMesh.receiveShadow = true;
+                            newMesh.userData = userData;
 
-						// 4. Set Visuals (Scale, Y-Pos, Material)
-						updatePlantVisuals(loadedPlant);
+                            const loadedPlant: PlantInfo = {
+                                ...plantData, // Spread data (includes type:'plant', but that's okay)
+                                mesh: newMesh,
+                                gridPos: { row: r, col: c }
+                            };
+                            newGridObject = loadedPlant;
 
-						// 5. Set Mesh Position (XZ from area center, Y from visuals)
-						loadedMesh.position.x = worldPos.x;
-						loadedMesh.position.z = worldPos.z;
-						// Y position already set by updatePlantVisuals
-						scene.add(loadedMesh);
+                            // Plant specific loading steps
+                            updatePlantGrowth(loadedPlant); // Offline growth
+                            const now = Date.now();
+                            const config = plantConfigs[loadedPlant.plantTypeId] ?? plantConfigs.default;
+                            if (loadedPlant.state === 'healthy' && (now - loadedPlant.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
+                                loadedPlant.state = 'needs_water';
+                            }
+                            updatePlantVisuals(loadedPlant); // Set visual state
 
-						// 6. Update Grid: Place main PlantInfo AND Pointers
-						gardenGrid[r][c] = loadedPlant; // Place main info
+                        } else if (savedCell.type === 'decor') {
+                            const decorData = savedCell; // Now correctly typed
+                            const material = getDecorMaterial(decorData.decorTypeId);
+                            newMesh = new THREE.Mesh(decorGeometry, material);
+                            newMesh.castShadow = true;
+                            newMesh.receiveShadow = true;
+                            newMesh.userData = userData;
 
-						for (let rOffset = 0; rOffset < plantSize.rows; rOffset++) {
-							for (let cOffset = 0; cOffset < plantSize.cols; cOffset++) {
-								if (rOffset === 0 && cOffset === 0) continue; // Skip top-left
+                            const loadedDecor: DecorInfo = {
+                                ...decorData, // Spread data (includes type:'decor')
+                                mesh: newMesh,
+                                gridPos: { row: r, col: c }
+                                // rotationY is already in decorData
+                            };
+                            newGridObject = loadedDecor;
 
-								const targetRow = r + rOffset;
-								const targetCol = c + cOffset;
-								if (targetRow < GRID_DIVISIONS && targetCol < GRID_DIVISIONS) {
-									// Check if pointer spot is unexpectedly occupied
-									if (gardenGrid[targetRow][targetCol] !== null) {
-											console.warn(`Load conflict: Pointer location [${targetRow}, ${targetCol}] for plant at [${r}, ${c}] is already occupied. Overwriting.`);
-									}
-									gardenGrid[targetRow][targetCol] = { pointerTo: { row: r, col: c } };
-								} else {
-									console.warn(`Load warning: Plant at [${r}, ${c}] extends out of bounds at [${targetRow}, ${targetCol}]. Pointer not placed.`);
-								}
-							}
-						}
+                            // Decor specific loading steps
+                            newMesh.rotation.y = loadedDecor.rotationY;
+                            const decorHeight = (CELL_SIZE * 0.5); // Placeholder height
+                            newMesh.position.y = decorHeight / 2; // Set Y position
+
+                        } else {
+                             console.warn(`Unknown object type loaded at [${r},${c}]:`, savedCell);
+                             continue; // Skip this cell
+                        }
+                        // --- End Differentiation ---
+
+						// Common loading steps for both types
+                        newMesh.position.x = worldPos.x;
+                        newMesh.position.z = worldPos.z;
+                        // Y position set above based on type
+                        scene.add(newMesh);
+
+						// Update Grid: Place main object AND Pointers
+                        gardenGrid[r][c] = newGridObject;
+                        for (let rOffset = 0; rOffset < objectSize.rows; rOffset++) {
+                             for (let cOffset = 0; cOffset < objectSize.cols; cOffset++) {
+                                if (rOffset === 0 && cOffset === 0) continue;
+                                const targetRow = r + rOffset;
+                                const targetCol = c + cOffset;
+                                if (targetRow < GRID_DIVISIONS && targetCol < GRID_DIVISIONS) {
+                                    if (gardenGrid[targetRow][targetCol] !== null) {
+                                         console.warn(`Load conflict pointer at [${targetRow}, ${targetCol}]`);
+                                    }
+                                    gardenGrid[targetRow][targetCol] = { pointerTo: { row: r, col: c } };
+                                } else { /* Warn out of bounds */ }
+                            }
+                        }
 					} // End if(savedCell)
 				} // End inner loop (cols)
 			} // End outer loop (rows)
@@ -802,12 +1069,11 @@ const resizeHandler = debounce(performResize, 150);
 // Drag n Drop
 function handleDragOver(event: DragEvent) {
 	event.preventDefault(); // Necessary to allow drop
-	if (event.dataTransfer) {
-		event.dataTransfer.dropEffect = 'copy';
-	}
+	if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
 
 	// --- Preview Update Logic ---
-	if (!draggingPlantType) return; // Only update if dragging a known plant
+	// Use the generic draggingItem state
+    if (!draggingItem || !isRenderLoopActive) return; // Check if dragging anything valid
 
 	// Raycast to find grid position (similar to handleDrop/handlePointerDown)
 	const rect = container.getBoundingClientRect();
@@ -828,8 +1094,9 @@ function handleDragOver(event: DragEvent) {
 		if (gridCoords) {
 			// Optimization: Only update if grid cell changed
 			if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
-				updatePreviewBox(gridCoords.row, gridCoords.col, draggingPlantType);
-			}
+                // Pass the objectType and typeId to updatePreviewBox
+                updatePreviewBox(gridCoords.row, gridCoords.col, draggingItem.objectType, draggingItem.typeId);
+            }
 		} else {
 			// Mouse is over the canvas but outside the grid
 			hidePreviewBox();
@@ -843,76 +1110,103 @@ function handleDragOver(event: DragEvent) {
 
 // Keep your existing handleDrop, but add preview hiding
 function handleDrop(event: DragEvent) {
-	event.preventDefault();
-	const wasInteracting = isInteracting; // Store state before clearing
+    event.preventDefault();
+    const wasInteracting = isInteracting; // Store state BEFORE clearing
 
-	// 1. Stop interaction state and loop FIRST
-	hidePreviewBox(); // Hide preview (scene state change)
-	draggingPlantType = null;
-	isInteracting = false; // STOP Interaction state
+    // --- Stop interaction state and capture item info ---
+    hidePreviewBox(); // Hide preview (scene state change)
+    const itemToPlace = draggingItem; // CAPTURE the item info
+    draggingItem = null; // CLEAR the global dragging state
+    isInteracting = false; // STOP interaction state
 
-	// Explicitly stop the loop *before* potential placement/saving
-	if (wasInteracting) {
-		stopRenderLoop(); // Ensure loop stops now
-	}
+    // Explicitly stop the loop *before* placement attempt
+    if (wasInteracting) {
+        stopRenderLoop(); // Ensure loop is stopped
+    }
+    // --- End interaction handling ---
 
-	let placementOccurred = false;
-	if (event.dataTransfer) {
-		const plantType = event.dataTransfer.getData('plantType');
-		if (plantType && plantConfigs[plantType]) {
-			const rect = container.getBoundingClientRect();
-			const mouseX = event.clientX - rect.left;
-			const mouseY = event.clientY - rect.top;
-			const mouse = new THREE.Vector2((mouseX / rect.width) * 2 - 1,-(mouseY / rect.height) * 2 + 1);
-			const raycaster = new THREE.Raycaster();
-			raycaster.setFromCamera(mouse, camera);
-			const intersects = raycaster.intersectObject(ground);
-			if (intersects.length > 0) {
-				const intersectPoint = intersects[0].point;
-				const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
-				if (gridCoords) {
-					placeObjectAt(gridCoords.row, gridCoords.col, plantType);
-					placementOccurred = true;
-				} else { console.log("Dropped outside grid."); }
-			} else { console.log("No intersection on drop."); }
-		} else { console.log("Invalid plantType drop data:", plantType); }
-	}
-	// Stop the loop if we were interacting (dragging)
-	if (wasInteracting) {
-		stopRenderLoop(); // STOP loop explicitly after drag ends
-	}
+    let placementOccurred = false;
 
-	// If placement didn't happen (which calls requestRender),
-	// but we stopped interacting/hid preview, request a render to be sure.
-	if (!placementOccurred) {
-		requestRender();
-	}
+    // --- Placement Logic ---
+    if (itemToPlace) {
+        const rect = container.getBoundingClientRect();
+        const mouseX = event.clientX - rect.left;
+        const mouseY = event.clientY - rect.top;
+        const mouse = new THREE.Vector2((mouseX / rect.width) * 2 - 1, -(mouseY / rect.height) * 2 + 1);
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObject(ground);
+
+        if (intersects.length > 0) {
+            const intersectPoint = intersects[0].point;
+            const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
+            if (gridCoords) {
+                // Use the generic placer with info captured from itemToPlace
+                console.log(`Attempting place: ${itemToPlace.objectType} - ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}]`);
+                placeGridObjectAt(
+                    gridCoords.row,
+                    gridCoords.col,
+                    itemToPlace.objectType, // Use objectType from captured item
+                    itemToPlace.typeId      // Use typeId from captured item
+                );
+                placementOccurred = true;
+            } else {
+                console.log("Dropped outside grid.");
+            }
+        } else {
+            console.log("No intersection with ground on drop.");
+        }
+    } else {
+        // This means drag might have started improperly or state got cleared unexpectedly
+        console.log("Drop occurred but no valid 'itemToPlace' was available.");
+    }
+    // --- End Placement Logic ---
+
+    // Request render if placement didn't happen (to show hidden preview)
+    if (!placementOccurred) {
+        console.log("Placement did not occur, requesting render for hidden preview.");
+        requestRender();
+    }
 }
 
 // Add handleDragEnter
 function handleDragEnter(event: DragEvent) {
 	event.preventDefault();
-	if (event.dataTransfer?.types.includes('planttype')) {
-		const plantType = event.dataTransfer.getData('plantType');
-		if (plantConfigs[plantType]) {
-			draggingPlantType = plantType;
-			isInteracting = true; // START Interaction
-			startRenderLoop();   // START Loop for preview updates
-			console.log("Dragging plant:", draggingPlantType);
-		} else { draggingPlantType = null; }
-	} else { draggingPlantType = null; }
+	// Reset just in case
+    draggingItem = null;
+
+	// Check dataTransfer for either type
+    const plantType = event.dataTransfer?.getData('plantType');
+    const decorType = event.dataTransfer?.getData('decorType');
+
+	let objectType: 'plant' | 'decor' | null = null;
+    let typeId: string | null = null;
+
+    if (plantType && plantConfigs[plantType]) {
+        objectType = 'plant';
+        typeId = plantType;
+    } else if (decorType && decorConfigs[decorType]) {
+        objectType = 'decor';
+        typeId = decorType;
+    }
+
+	if (objectType && typeId) {
+        draggingItem = { objectType, typeId }; // Store the item info
+        isInteracting = true; // START Interaction
+        startRenderLoop();   // START Loop for preview updates
+        console.log(`Dragging ${draggingItem.objectType}:`, draggingItem.typeId);
+    }
 }
 
 // Add handleDragLeave
 function handleDragLeave(event: DragEvent) {
 	if (event.relatedTarget === null || (event.relatedTarget instanceof Node && !container.contains(event.relatedTarget))) {
-		console.log("Drag left container");
-		hidePreviewBox();
-		draggingPlantType = null;
-		isInteracting = false; // STOP Interaction
-		stopRenderLoop();    // STOP Loop (unless growth needs it, renderFrame decides)
-		// No render needed here usually, as nothing changed *on* the garden
-	}
+        console.log("Drag left container");
+        hidePreviewBox();
+        draggingItem = null; // Clear the dragging item
+        isInteracting = false;
+        stopRenderLoop();
+    }
 }
 
 // Add handleBeforeUnload (Moved outside onMount)
@@ -941,50 +1235,50 @@ function renderFrame() {
 
 				// --- Check for Thirst ---
 				const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
-				if (plantInfo.state === 'healthy' && (now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
-					plantInfo.state = 'needs_water';
-					stateChangedThisFrame = true;
-					needsSave = true; // Became thirsty, save state
-					visualChangeOccurred = true; // Thirst changes appearance
-				}
+                if (plantInfo.state === 'healthy' && (now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
+                    plantInfo.state = 'needs_water';
+                    stateChangedThisFrame = true;
+                    needsSave = true;
+                    visualChangeOccurred = true;
+                }
 
-				// --- Growth Update ---
-				const growthHappened = updatePlantGrowth(plantInfo);
-				if (growthHappened) {
-					visualChangeOccurred = true; // Growth changes appearance
-				}
+                // --- Growth Update ---
+                const growthHappened = updatePlantGrowth(plantInfo);
+                if (growthHappened) {
+                    visualChangeOccurred = true;
+                }
 
-				// Track if *any* healthy plant is still growing
-				if (plantInfo.state === 'healthy' && plantInfo.growthProgress < 1.0) {
-					activeGrowthOccurring = true;
-				}
+                // Track if *any* plant is still growing
+                if (plantInfo.state === 'healthy' && plantInfo.growthProgress < 1.0) {
+                    activeGrowthOccurring = true;
+                }
 
-				// --- Update Visuals ---
-				// Only update Three.js visuals if state changed or growth happened
-				if (stateChangedThisFrame || growthHappened) {
-					updatePlantVisuals(plantInfo);
-					// No need to set visualChangeOccurred again, already covered
-				}
+                // --- Update Plant Visuals ---
+                if (stateChangedThisFrame || growthHappened) {
+                    updatePlantVisuals(plantInfo);
+                }
 			}
+			// --- No updates needed for DecorInfo within this loop ---
+            // (Decor is static after placement for now)
 		}
 	}
 
 	// --- Save State ---
 	if (needsSave) {
+		// saveGardenState implicitly calls requestRender if needed
 		saveGardenState();
 	}
 
 	// --- Render Scene ---
 	// We always render if this function is called, either by the loop or requestRender
-	// console.log("Rendering frame"); // Can be noisy, use for debugging
 	renderer.render(scene, camera);
 
 	// --- Decide whether to continue the loop ---
 	// Continue if:
 	// 1. The loop is *supposed* to be active (isRenderLoopActive is true)
 	// AND
-	// 2. EITHER the user is interacting OR there's active growth animation needed.
-	const shouldContinueLoop = isRenderLoopActive && (isInteracting || activeGrowthOccurring);
+	// 2. EITHER the user is interacting.
+	const shouldContinueLoop = isRenderLoopActive && isInteracting;
 
 	if (shouldContinueLoop) {
 		// Request the next frame for the continuous loop

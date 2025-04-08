@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { selectedAction, availablePlants, type SelectedAction } from './stores';
+    import { selectedAction, availablePlants, availableDecor, type SelectedAction } from './stores';
 
     function selectPlant(plantType: string) {
         selectedAction.update(current => {
@@ -16,13 +16,25 @@
         });
     }
 
-    // Function to handle drag start
-    function dragStart(event: DragEvent, plantType: string) {
+    // --- Modified Drag Start ---
+    // Specific function for starting plant drag
+    function dragStartPlant(event: DragEvent, plantId: string) {
         if (event.dataTransfer) {
-        event.dataTransfer.setData('plantType', plantType); // Store plant type
-        event.dataTransfer.effectAllowed = 'copyMove'; // Indicate what operations are allowed
+            console.log("Dragging Plant:", plantId);
+            event.dataTransfer.setData('plantType', plantId); // Use 'plantType' key
+            event.dataTransfer.effectAllowed = 'copy'; // Usually 'copy' for placing new items
         }
     }
+
+    // Specific function for starting decor drag
+    function dragStartDecor(event: DragEvent, decorId: string) {
+        if (event.dataTransfer) {
+            console.log("Dragging Decor:", decorId);
+            event.dataTransfer.setData('decorType', decorId); // Use 'decorType' key
+            event.dataTransfer.effectAllowed = 'copy';
+        }
+    }
+    // --- End Modified Drag Start ---
 
     // Function to handle drag end (optional: for visual feedback)
     function dragEnd(event: DragEvent) {
@@ -30,36 +42,55 @@
         // For example, reset the appearance of the dragged element
     }
 
-    // Reactive declaration to get the current value for styling
-    let currentAction: SelectedAction;
+    // Reactive declaration to get the current value for styling (remains the same)
+    let currentAction: SelectedAction | null = null; // Initialize as potentially null
     selectedAction.subscribe(value => {
         currentAction = value;
     });
 
-    // Helper to check if an action is currently selected
+    // Helper to check if an action is currently selected (remains the same)
     function isSelected(action: SelectedAction): boolean {
+         // Handle potential null value for currentAction
+        if (!currentAction) return false;
         return JSON.stringify(currentAction) === JSON.stringify(action);
     }
-
 </script>
 
 <div class="ui-panel">
-    <h3>Tools & Plants</h3>
+    <h3>Toolbox</h3>
 
     <!-- Plant Selection (Draggable) -->
     <h4>Plants:</h4>
-    <div class="plant-list">
+    <div class="item-list">
         {#each availablePlants as plant}
         <div
-            class="plant-item"
+            class="item"
             draggable="true"
             role="button"
             tabindex="0"
             aria-label={`Drag ${plant.name}`}
-            on:dragstart={(event) => dragStart(event, plant.id)}
+            on:dragstart={(event) => dragStartPlant(event, plant.id)}
             on:dragend={dragEnd}
         >
             {plant.name}
+        </div>
+        {/each}
+    </div>
+
+    <!-- Decor Selection (Draggable) -->
+    <h4>Decor:</h4>
+    <div class="item-list">
+        {#each availableDecor as decor}
+        <div
+            class="item"
+            draggable="true"
+            role="button"
+            tabindex="0"
+            aria-label={`Drag ${decor.name}`}
+            on:dragstart={(event) => dragStartDecor(event, decor.id)}
+            on:dragend={dragEnd}
+        >
+            {decor.name}
         </div>
         {/each}
     </div>
@@ -125,14 +156,14 @@
         color: #555;
     }
 
-    .plant-list {
+    .item-list {
         display: flex;
         flex-direction: row;
         gap: 10px;
         margin-bottom: 10px;
     }
 
-    .plant-item {
+    .item {
         padding: 5px 10px;
         border: 1px solid #888;
         border-radius: 5px;
@@ -140,7 +171,12 @@
         cursor: grab; /* Change cursor to grab icon */
     }
 
-    .plant-item:hover {
+    .item:hover {
         background-color: #ccc;
+    }
+
+    .item:active {
+         cursor: grabbing; /* Indicate active drag */
+         background-color: #c0c0c0;
     }
 </style>
