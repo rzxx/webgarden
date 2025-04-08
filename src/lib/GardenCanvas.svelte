@@ -1342,8 +1342,8 @@ onMount(() => {
 	scene.add(directionalLight);
 
 	// Optional but HIGHLY recommended for debugging shadow camera bounds:
-	const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
-	scene.add(shadowHelper); // Add temporarily to see the shadow box
+	// const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
+	// scene.add(shadowHelper); // Add temporarily to see the shadow box
 
 	const groundGeometry = new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE);
 	const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x81b29a, side: THREE.DoubleSide });
