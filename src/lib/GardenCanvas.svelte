@@ -352,31 +352,6 @@ function getGridObjectInfoAt(row: number, col: number): PlantInfo | DecorInfo | 
 }
 // --- End Generic Helper ---
 
-// --- Helper to get PlantInfo, resolving pointers ---
-/* function getPlantInfoAt(row: number, col: number): PlantInfo | null {
-	if (row < 0 || row >= GRID_DIVISIONS || col < 0 || col >= GRID_DIVISIONS) return null; // Out of bounds
-
-	const cell = gardenGrid[row][col];
-	if (!cell) {
-		return null; // Empty cell
-	} else if ('pointerTo' in cell) {
-		// It's a pointer, follow it
-		const target = cell.pointerTo;
-		const targetCell = gardenGrid[target.row]?.[target.col];
-		if (targetCell && 'plantTypeId' in targetCell) {
-			return targetCell; // Return the PlantInfo from the target cell
-		} else {
-				console.error(`Pointer at [${row}, ${col}] points to invalid or empty cell [${target.row}, ${target.col}]`);
-				// Optionally clean up the bad pointer here: gardenGrid[row][col] = null;
-			return null; // Pointer leads nowhere valid
-		}
-	} else {
-		// It's the main PlantInfo object
-		return cell;
-	}
-} */
-// --- End Helper ---
-
 /** Requests a single render frame if the loop isn't already active
  * and a frame hasn't already been requested. */
 function requestRender() {
@@ -548,44 +523,6 @@ function updatePlantGrowth(plantInfo: PlantInfo): boolean {
 	plantInfo.lastUpdateTime = now;
 	return needsVisualUpdate;
 }
-// --- End Function to Update Plant Growth ---
-
-// --- Function to Remove Plant (Handles Multi-Cell) ---
-/* function removePlantAt(row: number, col: number) {
-	// 1. Find the actual PlantInfo, resolving pointers
-	const plantInfo = getPlantInfoAt(row, col);
-
-	if (plantInfo?.mesh) {
-		console.log(`Removing plant ${plantInfo.plantTypeId} originating at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] (triggered from [${row}, ${col}])`);
-
-		// 2. Get size and original position from the resolved PlantInfo
-		const { size, gridPos } = plantInfo;
-
-		// 3. Remove Mesh from Scene and Dispose Geometry
-		scene.remove(plantInfo.mesh);
-		plantInfo.mesh.geometry.dispose();
-		// (Materials are shared, don't dispose them here)
-		plantInfo.mesh = undefined; // Clear mesh reference
-
-		// 4. Clear Grid Data for all occupied cells
-		for (let rOffset = 0; rOffset < size.rows; rOffset++) {
-			for (let cOffset = 0; cOffset < size.cols; cOffset++) {
-				const targetRow = gridPos.row + rOffset;
-				const targetCol = gridPos.col + cOffset;
-				if (targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
-						gardenGrid[targetRow][targetCol] = null;
-				}
-			}
-		}
-
-		// 5. Save State
-		saveGardenState();
-
-	} else {
-		console.log(`No plant found at or pointed to by [${row}, ${col}] to remove.`);
-	}
-} */
-// --- End Function to Remove Plant ---
 
 // --- Function to Remove Grid Object (Replaces removePlantAt) ---
 function removeGridObjectAt(row: number, col: number) {
@@ -623,72 +560,6 @@ function removeGridObjectAt(row: number, col: number) {
         console.log(`No grid object found at or pointed to by [${row}, ${col}] to remove.`);
     }
 }
-// --- End Function to Remove Grid Object ---
-
-// --- Function to Place Object (Handles Multi-Cell) ---
-/* function placeObjectAt(row: number, col: number, plantTypeId: string) {
-	const config = plantConfigs[plantTypeId] ?? plantConfigs.default;
-	const plantSize = config.size;
-
-	// 1. Check if the entire area is free
-	if (!isAreaFree(row, col, plantSize.rows, plantSize.cols)) {
-		console.log(`Cannot place ${plantTypeId} of size ${plantSize.rows}x${plantSize.cols} at [${row}, ${col}], area not free.`);
-		return;
-	}
-
-	// 2. Create Mesh and PlantInfo
-	const placeholderMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial); // Start with healthy
-	placeholderMesh.castShadow = true; // This plant mesh will cast shadows
-	placeholderMesh.receiveShadow = true; // Receives shadows from other objects
-	placeholderMesh.userData = { gridPos: { row, col } }; // Store reference to top-left
-	const worldPos = gridAreaCenterToWorld(row, col, plantSize.rows, plantSize.cols); // Center of the whole area
-	const now = Date.now();
-
-	const newPlant: PlantInfo = {
-		plantTypeId: plantTypeId,
-		state: 'healthy',
-		growthProgress: 0.0,
-		lastUpdateTime: now,
-		lastWateredTime: now,
-		size: { ...plantSize }, // Copy size object
-		gridPos: { row, col }, // Store top-left grid position
-		mesh: placeholderMesh
-	};
-
-	// 3. Set Initial Visual State (Scale, Y-Position, Material)
-	updatePlantVisuals(newPlant); // Sets scale, Y pos, material
-
-	// 4. Set Mesh Position (XZ from area center, Y from visuals)
-	placeholderMesh.position.x = worldPos.x;
-	placeholderMesh.position.z = worldPos.z;
-	// Y position is already set correctly by updatePlantVisuals
-	scene.add(placeholderMesh);
-
-	// 5. Update Grid Data
-	// Place main PlantInfo at top-left
-	gardenGrid[row][col] = newPlant;
-	console.log(`Placed main info for ${plantTypeId} at [${row}, ${col}].`);
-
-	// Place pointers in other cells
-	for (let rOffset = 0; rOffset < plantSize.rows; rOffset++) {
-		for (let cOffset = 0; cOffset < plantSize.cols; cOffset++) {
-			// Skip the top-left cell where the main info is
-			if (rOffset === 0 && cOffset === 0) continue;
-
-			const targetRow = row + rOffset;
-			const targetCol = col + cOffset;
-			// Bounds check should be implicitly handled by isAreaFree, but double-check is safe
-			if (targetRow < GRID_DIVISIONS && targetCol < GRID_DIVISIONS) {
-				gardenGrid[targetRow][targetCol] = { pointerTo: { row, col } };
-				// console.log(`Placed pointer at [${targetRow}, ${targetCol}] pointing to [${row}, ${col}].`);
-			}
-		}
-	}
-
-	// 6. Save state
-	saveGardenState();
-} */
-// --- End Function to Place Object ---
 
 // --- Function to Place Grid Object (Replaces placeObjectAt) ---
 // typeId can be plantTypeId or decorTypeId
@@ -1512,17 +1383,6 @@ onDestroy(() => {
 	validPlacementMaterial?.dispose();
 	invalidPlacementMaterial?.dispose();
 	previewMeshes[0]?.geometry?.dispose(); // Geometry is shared, dispose once
-
-	// Clear meshes that might linger if traversal missed them somehow
-	// (Mesh references should be cleared in removePlantAt and loadGardenState errors)
-	// for (let r = 0; r < GRID_DIVISIONS; r++) {
-	// 	for (let c = 0; c < GRID_DIVISIONS; c++) {
-	// 		const cell = gardenGrid[r]?.[c];
-	//         if (cell && 'mesh' in cell && cell.mesh) {
-	//             scene.remove(cell.mesh); // Ensure removal if not already gone
-	//         }
-	// 	}
-	// }
 
 	clock.stop();
 	container.removeEventListener('dragenter', handleDragEnter);
