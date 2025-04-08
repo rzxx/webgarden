@@ -357,6 +357,8 @@
 
         // 2. Create Mesh and PlantInfo
 		const placeholderMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial); // Start with healthy
+		placeholderMesh.castShadow = true; // This plant mesh will cast shadows
+		placeholderMesh.receiveShadow = true; // Receives shadows from other objects
         const worldPos = gridAreaCenterToWorld(row, col, plantSize.rows, plantSize.cols); // Center of the whole area
 		const now = Date.now();
 
@@ -536,6 +538,8 @@
 
                             // 1. Recreate Mesh
 							const loadedMesh = new THREE.Mesh(placeholderGeometry, healthyMaterial); // Start healthy
+							loadedMesh.castShadow = true; // Loaded plants should also cast shadows
+							loadedMesh.receiveShadow = true; // Receives shadows from other objects
                             const plantSize = savedCell.size; // Get size from saved data
                             const worldPos = gridAreaCenterToWorld(r, c, plantSize.rows, plantSize.cols); // Center of multi-cell area
 
@@ -719,19 +723,41 @@
 		renderer = new THREE.WebGLRenderer({ antialias: true });
 		renderer.setSize(container.clientWidth, container.clientHeight);
 		renderer.setPixelRatio(window.devicePixelRatio);
+		renderer.shadowMap.enabled = true;
+		// Optional: You can choose softer shadow types (might impact performance)
+		// renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Example: Softer shadows
 		container.appendChild(renderer.domElement);
 
 		const ambientLight = new THREE.AmbientLight(0xffffff, 1);
 		scene.add(ambientLight);
 		const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
 		directionalLight.position.set(-10, 15, 10);
+		directionalLight.castShadow = true; // Enable shadow casting for this light
+		// Configure the shadow camera properties (IMPORTANT!)
+		// This defines the box area the light covers for shadows. Adjust as needed for your scene size.
+		const shadowCamSize = 20; // How wide/tall the shadow area is (related to PLANE_SIZE)
+		directionalLight.shadow.camera.left = -shadowCamSize;
+		directionalLight.shadow.camera.right = shadowCamSize;
+		directionalLight.shadow.camera.top = shadowCamSize;
+		directionalLight.shadow.camera.bottom = -shadowCamSize;
+		directionalLight.shadow.camera.near = 0.5; // How close shadows start from the light source
+		directionalLight.shadow.camera.far = 50; // How far shadows extend
+
+		// Optional: Increase shadow map resolution for sharper shadows (more performance cost)
+		// directionalLight.shadow.mapSize.width = 2048;
+		// directionalLight.shadow.mapSize.height = 2048;
 		scene.add(directionalLight);
+
+		// Optional but HIGHLY recommended for debugging shadow camera bounds:
+		const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
+		scene.add(shadowHelper); // Add temporarily to see the shadow box
 
 		const groundGeometry = new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE);
 		const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x81b29a, side: THREE.DoubleSide });
 		ground = new THREE.Mesh(groundGeometry, groundMaterial);
 		ground.rotation.x = -Math.PI / 2;
 		ground.position.y = -0.01;
+		ground.receiveShadow = true; // The ground will display shadows cast onto it
 		scene.add(ground);
 
 		gridHelper = new THREE.GridHelper(PLANE_SIZE, GRID_DIVISIONS);
@@ -876,7 +902,6 @@
 			if (event.dataTransfer) {
 				const plantType = event.dataTransfer.getData('plantType');
 				if (plantType && plantConfigs[plantType]) {
-					// ... (rest of your existing raycasting and placeObjectAt logic) ...
 					const rect = container.getBoundingClientRect();
 					const mouseX = event.clientX - rect.left;
 					const mouseY = event.clientY - rect.top;
