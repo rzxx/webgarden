@@ -40,6 +40,7 @@ interface DecorConfig {
 
 const decorConfigs: Record<string, DecorConfig> = {
     box: { size: { rows: 1, cols: 1 }, placeholderColor: 0x403d39, defaultRotationY: 0 },
+	boxBig: { size: { rows: 2, cols: 2 }, placeholderColor: 0x403d39, defaultRotationY: 0 },
 };
 // --- End Decor Configuration ---
 
@@ -153,15 +154,15 @@ let lastPreviewGridPos: { row: number; col: number } | null = null;
 
 // --- Day/Night Cycle Configuration ---
 const SUNRISE_HOUR = 6; // 6 AM
-const SUNSET_HOUR = 22; // 6 PM
+const SUNSET_HOUR = 20; // 8 PM
 const DAY_DURATION_HOURS = SUNSET_HOUR - SUNRISE_HOUR;
 const SUN_DISTANCE = 20; // How far away the light source is
 
 // --- Colors (Define as THREE.Color objects) ---
-const DAY_SKY_COLOR = new THREE.Color(0x87CEEB); // Light Sky Blue
-const NIGHT_SKY_COLOR = new THREE.Color(0x0b122e); // Deep Navy Blue
-const SUNRISE_SKY_COLOR = new THREE.Color(0xffca7a); // Orangey pink
-const SUNSET_SKY_COLOR = new THREE.Color(0xff8a63); // Reddish orange
+const DAY_SKY_COLOR = new THREE.Color(0xB2F7EF); // Light Sky Blue
+const NIGHT_SKY_COLOR = new THREE.Color(0x252422); // Deep Navy Blue
+const SUNRISE_SKY_COLOR = new THREE.Color(0xFFCAAF); // Orangey pink
+const SUNSET_SKY_COLOR = new THREE.Color(0xEC4067); // Reddish orange
 
 // --- Light Intensities ---
 const MAX_DIRECTIONAL_INTENSITY = 1.0; // Peak sun intensity
