@@ -83,7 +83,7 @@ const GRID_DIVISIONS = 10;
 const CELL_SIZE = PLANE_SIZE / GRID_DIVISIONS;
 const HALF_PLANE_SIZE = PLANE_SIZE / 2;
 
-const gardenVisibleSize = 30;
+const gardenVisibleSize = 20;
 
 // --- Types ---
 interface SerializableDecorInfo {
@@ -155,7 +155,7 @@ let lastPreviewGridPos: { row: number; col: number } | null = null;
 const SUNRISE_HOUR = 6; // 6 AM
 const SUNSET_HOUR = 22; // 6 PM
 const DAY_DURATION_HOURS = SUNSET_HOUR - SUNRISE_HOUR;
-const SUN_DISTANCE = 50; // How far away the light source is
+const SUN_DISTANCE = 20; // How far away the light source is
 
 // --- Colors (Define as THREE.Color objects) ---
 const DAY_SKY_COLOR = new THREE.Color(0x87CEEB); // Light Sky Blue
@@ -193,6 +193,11 @@ const SAVE_INTERVAL_MS = 15000;
 const BACKGROUND_UPDATE_INTERVAL_MS = 500; // Check for growth/dynamics every 500ms (2fps) - adjust as needed
 // Interval ID for the background check
 let backgroundCheckIntervalId: number | undefined = undefined;
+
+// Configuration for SLOW background updates (day/night only)
+const IDLE_DAYNIGHT_UPDATE_INTERVAL_MS = 60 * 1000; // Check day/night every 60 seconds (1 minute) - adjust
+// Interval ID for the slow day/night check
+let idleDayNightCheckIntervalId: number | undefined = undefined;
 
 let isRenderLoopActive: boolean = false; // Is the continuous loop running?
 let renderRequested: boolean = false;   // Has a single frame been requested?
@@ -403,12 +408,18 @@ function startRenderLoop() {
 		// Cancel any potentially pending single frame request ID
 		if (animationFrameId) cancelAnimationFrame(animationFrameId);
 
-		// Clear the background check interval
-		if (backgroundCheckIntervalId !== undefined) {
+		// --- Pause BOTH background intervals ---
+        if (backgroundCheckIntervalId !== undefined) {
             clearInterval(backgroundCheckIntervalId);
-            backgroundCheckIntervalId = undefined; // Clear the ID
-            console.log("Paused background check interval (rAF loop active).");
+            backgroundCheckIntervalId = undefined;
+            console.log("Paused growth check interval (rAF loop active).");
         }
+        if (idleDayNightCheckIntervalId !== undefined) { // Pause idle check too
+            clearInterval(idleDayNightCheckIntervalId);
+            idleDayNightCheckIntervalId = undefined;
+            console.log("Paused idle day/night check interval (rAF loop active).");
+        }
+        // --- End Pause ---
 
 		// Start the rAF loop
 		animationFrameId = requestAnimationFrame(renderFrame);
@@ -417,20 +428,33 @@ function startRenderLoop() {
 
 /**
  * Periodically checks if background processes (like growth) require a render frame.
+ * Day/night checks are handled separately when idle.
  */
  function performBackgroundCheck() {
-    // We only need to potentially trigger a render if:
-    // 1. The main interaction loop ISN'T already running
-    // 2. There IS active growth (or other future dynamic states) occurring
-    // Note: activeGrowthOccurring is updated within renderFrame whenever it runs.
-    // So, this check uses the value from the *last time* renderFrame executed.
-
+    // Only request render if:
+    // 1. Main loop ISN'T running
+    // 2. Active GROWTH is occurring
     if (!isRenderLoopActive && activeGrowthOccurring) {
-        // console.log("Background check: Growth detected, requesting render.");
+        // console.log("Growth Background check: Growth detected, requesting render.");
         requestRender(); // Request a single frame to update growth visuals
-    } else {
-        // console.log(`Background check: No render needed (loopActive: ${isRenderLoopActive}, growth: ${activeGrowthOccurring})`);
     }
+    // No longer checks for day/night here
+}
+
+/**
+ * Periodically checks if the day/night cycle needs updating WHEN the garden is
+ * otherwise completely idle (no interaction, no growth).
+ */
+ function performIdleBackgroundCheck() {
+    // Only request render if:
+    // 1. Main loop ISN'T running
+    // 2. There is NO active growth occurring
+    // 3. We are NOT currently interacting (safety check, though loop should handle interaction)
+    if (!isRenderLoopActive && !activeGrowthOccurring && !isInteracting) {
+        // console.log("Idle Day/Night check: Requesting render for time update.");
+        requestRender(); // Request a single frame JUST to update day/night visuals
+    }
+     // else { console.log("Idle Day/Night check: Skipped (Loop Active or Growth Occurring or Interacting)"); }
 }
 
 /** Stops the continuous render loop if it's running. */
@@ -444,19 +468,26 @@ function stopRenderLoop() {
 			animationFrameId = undefined;
 		}
 
-		// Restart the background check interval
-        // Ensure it's not somehow already running and start it
+		// --- Restart BOTH background intervals (if not already running) ---
         if (backgroundCheckIntervalId === undefined) {
             backgroundCheckIntervalId = window.setInterval(performBackgroundCheck, BACKGROUND_UPDATE_INTERVAL_MS);
-            console.log(`Resumed background check interval (${BACKGROUND_UPDATE_INTERVAL_MS}ms).`);
+            console.log(`Resumed growth check interval (${BACKGROUND_UPDATE_INTERVAL_MS}ms).`);
         }
-	}
-	// If the loop wasn't active, make sure the background check is running
-    // This handles cases where stopRenderLoop might be called defensively
-    // even if the loop wasn't technically active (e.g., after interaction ends).
-    else if (backgroundCheckIntervalId === undefined) {
-         console.log("Ensuring background check interval is running (loop was not active).");
-         backgroundCheckIntervalId = window.setInterval(performBackgroundCheck, BACKGROUND_UPDATE_INTERVAL_MS);
+         if (idleDayNightCheckIntervalId === undefined) { // Restart idle check too
+            idleDayNightCheckIntervalId = window.setInterval(performIdleBackgroundCheck, IDLE_DAYNIGHT_UPDATE_INTERVAL_MS);
+            console.log(`Resumed idle day/night check interval (${IDLE_DAYNIGHT_UPDATE_INTERVAL_MS}ms).`);
+        }
+        // --- End Restart ---
+	} else {
+        // Loop wasn't active, ensure intervals ARE running if they somehow got cleared
+        if (backgroundCheckIntervalId === undefined) {
+            console.log("Ensuring growth check interval is running.");
+            backgroundCheckIntervalId = window.setInterval(performBackgroundCheck, BACKGROUND_UPDATE_INTERVAL_MS);
+        }
+        if (idleDayNightCheckIntervalId === undefined) {
+            console.log("Ensuring idle day/night check interval is running.");
+            idleDayNightCheckIntervalId = window.setInterval(performIdleBackgroundCheck, IDLE_DAYNIGHT_UPDATE_INTERVAL_MS);
+        }
     }
 }
 
@@ -1374,25 +1405,20 @@ onMount(() => {
 		window.addEventListener('beforeunload', handleBeforeUnload);
 	}
 
-	// *** Trigger initial Day/Night update ***
-    updateDayNightCycle(); // Set initial state based on current time
-	// Perform initial resize and render
-	performResize(); // Calls requestRender
 	clock.start();
-
 	// Start periodic save timer
 	saveIntervalId = window.setInterval(() => saveGardenState(), SAVE_INTERVAL_MS);
 
-	// Always start the background check interval on mount now,
-	// because the rAF loop does not start automatically anymore based on growth.
-	// The background check will handle triggering renders if growth is occurring.
-	if (backgroundCheckIntervalId === undefined) {
-		backgroundCheckIntervalId = window.setInterval(performBackgroundCheck, BACKGROUND_UPDATE_INTERVAL_MS);
-		console.log(`Started background check interval initially (${BACKGROUND_UPDATE_INTERVAL_MS}ms)`);
-	} else {
-		// This path shouldn't normally be hit if logic is correct
-		console.warn("Background check interval ID was already set in onMount?");
-	}
+	// Start background intervals (neither should be running yet)
+    if (backgroundCheckIntervalId === undefined) {
+         backgroundCheckIntervalId = window.setInterval(performBackgroundCheck, BACKGROUND_UPDATE_INTERVAL_MS);
+         console.log(`Started growth check interval initially (${BACKGROUND_UPDATE_INTERVAL_MS}ms)`);
+    }
+    if (idleDayNightCheckIntervalId === undefined) {
+         idleDayNightCheckIntervalId = window.setInterval(performIdleDayNightCheck, IDLE_DAYNIGHT_UPDATE_INTERVAL_MS);
+         console.log(`Started idle day/night check interval initially (${IDLE_DAYNIGHT_UPDATE_INTERVAL_MS}ms)`);
+    }
+	
 	// --- Calculate Initial Growth State ---
 	// We still need to know if growth is happening so the *first*
 	// background check performs correctly. Recalculate after load/init.
@@ -1408,8 +1434,11 @@ onMount(() => {
 		if(activeGrowthOccurring) break;
 	}
 	console.log("Initial active growth status check:", activeGrowthOccurring);
-	// Now, the background check interval, when it first fires, will see
-	// the correct initial 'activeGrowthOccurring' state and request a render if needed.
+
+	// *** Trigger initial Day/Night update ***
+	updateDayNightCycle(); // Set initial state based on current time
+	// Perform initial resize and render
+	performResize(); // Calls requestRender
 
 	// onDestroy return function remains the same conceptually
 	return () => {
@@ -1430,19 +1459,19 @@ onDestroy(() => {
 	}
 	saveGardenState(); // Final save attempt
 
-	// Clear periodic save timer
-	if (saveIntervalId !== undefined) {
-		clearInterval(saveIntervalId);
-	}
-
 	if (animationFrameId !== undefined){
 		cancelAnimationFrame(animationFrameId);
 	}
 
-	// Clear the background check interval
+	// Clear intervals
+    if (saveIntervalId !== undefined) clearInterval(saveIntervalId);
     if (backgroundCheckIntervalId !== undefined) {
         clearInterval(backgroundCheckIntervalId);
-        console.log("Stopped background check interval.");
+        console.log("Stopped growth check interval.");
+    }
+     if (idleDayNightCheckIntervalId !== undefined) { // Clear idle check too
+        clearInterval(idleDayNightCheckIntervalId);
+        console.log("Stopped idle day/night check interval.");
     }
 	
 	window.removeEventListener('resize', resizeHandler); // Remove throttled version
