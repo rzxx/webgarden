@@ -153,34 +153,59 @@ let lastPreviewGridPos: { row: number; col: number } | null = null;
 /// --- End Bounding Boxes ---
 
 // --- Day/Night Cycle Configuration ---
-const SUNRISE_HOUR = 6; // 6 AM
-const SUNSET_HOUR = 20; // 8 PM
-const DAY_DURATION_HOURS = SUNSET_HOUR - SUNRISE_HOUR;
-const SUN_DISTANCE = 20; // How far away the light source is
+const SUNRISE_START_HOUR = 5; // When sunrise brightening *starts*
+const SUNRISE_PEAK_HOUR = 6.5; // When the SUNRISE_COLOR is strongest
+const SUNRISE_END_HOUR = 7;   // When sunrise transition *ends* (mostly day color)
+
+const SUNSET_START_HOUR = 19; // When sunset transition *starts* (moving from day)
+const SUNSET_PEAK_HOUR = 19.75;// When the SUNSET_COLOR is strongest
+const SUNSET_END_HOUR = 21;  // When sunset transition *ends* (mostly night color)
+
+const MIDDAY_HOUR = 13;       // For peak day color/intensity reference
+const SUN_DISTANCE = 30;
+
+// --- Time Points (Fraction of day 0.0 to 1.0) ---
+const MIDNIGHT_POINT = 0.0;
+const SUNRISE_START_POINT = SUNRISE_START_HOUR / 24;
+const SUNRISE_PEAK_POINT = SUNRISE_PEAK_HOUR / 24;
+const SUNRISE_END_POINT = SUNRISE_END_HOUR / 24; // End of main sunrise color influence
+const MIDDAY_POINT = MIDDAY_HOUR / 24;
+const SUNSET_START_POINT = SUNSET_START_HOUR / 24; // Start of main sunset color influence
+const SUNSET_PEAK_POINT = SUNSET_PEAK_HOUR / 24;
+const SUNSET_END_POINT = SUNSET_END_HOUR / 24; // End of sunset transition -> night
+const NEXT_MIDNIGHT_POINT = 1.0;
 
 // --- Colors (Define as THREE.Color objects) ---
-const DAY_SKY_COLOR = new THREE.Color(0xB2F7EF); // Light Sky Blue
-const NIGHT_SKY_COLOR = new THREE.Color(0x252422); // Deep Navy Blue
-const SUNRISE_SKY_COLOR = new THREE.Color(0xFFCAAF); // Orangey pink
-const SUNSET_SKY_COLOR = new THREE.Color(0xEC4067); // Reddish orange
+// Sky Colors
+const NIGHT_SKY_COLOR = new THREE.Color(0x04080F);
+const SUNRISE_SKY_COLOR = new THREE.Color(0xFFD670); // Peak sunrise
+const DAY_SKY_COLOR = new THREE.Color(0xC6E9FB);  // Standard Sky
+const SUNSET_SKY_COLOR = new THREE.Color(0xED6A5A); // Peak sunset
 
-// --- Light Intensities ---
-const MAX_DIRECTIONAL_INTENSITY = 1.0; // Peak sun intensity
-const MIN_DIRECTIONAL_INTENSITY_NIGHT = 0.05; // Faint moonlight/ambient directional
-const MAX_AMBIENT_INTENSITY = 0.8; // Ambient light during the day
-const MIN_AMBIENT_INTENSITY = 0.15; // Ambient light at night
+// Ground Colors for Hemisphere Light
+const NIGHT_GROUND_COLOR = new THREE.Color(0x212A24);
+const SUNRISE_GROUND_COLOR = new THREE.Color(0x77945C);
+const DAY_GROUND_COLOR = new THREE.Color(0x5C946E);
+const SUNSET_GROUND_COLOR = new THREE.Color(0x94925C);
 
-// --- State Variable ---
-let ambientLight: THREE.AmbientLight; // Declare at top level
-// Keep directionalLight declared/assigned in onMount, but we'll need access to it.
-// Let's ensure directionalLight is also declared at the top level for access.
-let directionalLight: THREE.DirectionalLight;
+// --- Light Intensities  ---
+const MAX_DIRECTIONAL_INTENSITY = 1.2;
+const MIN_DIRECTIONAL_INTENSITY = 0.1;
+const MAX_AMBIENT_INTENSITY = 0.6;
+const MIN_AMBIENT_INTENSITY = 0.1;
+const MAX_HEMISPHERE_INTENSITY = 0.8;
+const MIN_HEMISPHERE_INTENSITY = 0.1;
 
-// We can reuse the THREE.Color objects for lerping to avoid creating new ones constantly
+// --- State Variables  ---
+let ambientLight: THREE.AmbientLight | null = null;
+let directionalLight: THREE.DirectionalLight | null = null;
+let hemisphereLight: THREE.HemisphereLight | null = null;
+// let shadowHelper: THREE.CameraHelper; // If you use one
+
+// Reusable Color objects for lerping to avoid GC overhead
 const currentSkyColor = new THREE.Color();
-const interpolatedColor1 = new THREE.Color();
-const interpolatedColor2 = new THREE.Color();
-// --- End Day/Night Cycle Configuration ---
+const currentGroundColor = new THREE.Color();
+// --- End Day/Night Cycle ---
 
 let container: HTMLDivElement;
 let renderer: THREE.WebGLRenderer;
@@ -262,6 +287,37 @@ function debounce<T extends (...args: any[]) => any>(func: T, delay: number): { 
 	return debounced;
 }
 
+// --- Helper: Smooth Intensity Factor (Focus on Transition Windows) ---
+function getIntensityFactor(cycleProgress: number): number {
+    // Define the "effective daytime" for intensity ramp-up/down
+    // It starts ramping at SUNRISE_START and finishes ramping down by SUNSET_END
+    const dayIntensityStart = SUNRISE_START_POINT;
+    const dayIntensityEnd = SUNSET_END_POINT;
+    const dayIntensityDuration = dayIntensityEnd - dayIntensityStart;
+
+    if (cycleProgress < dayIntensityStart || cycleProgress > dayIntensityEnd) {
+        // Handle the night period (including wrap-around)
+        // Ensure we correctly calculate duration across midnight
+        let nightDuration;
+        if (dayIntensityEnd > dayIntensityStart) {
+            nightDuration = (1.0 - dayIntensityEnd) + dayIntensityStart;
+        } else { // Should not happen with typical hours, but safety check
+             nightDuration = dayIntensityStart - dayIntensityEnd;
+        }
+        // Optional: Could add a *very* subtle sine wave for moonlight intensity
+        // variation during the night, but let's keep it simple first.
+        return 0; // Factor is 0 during the night
+    }
+
+    // Calculate progress within the broad "day intensity" period (0 to 1)
+    const dayProgress = (cycleProgress - dayIntensityStart) / dayIntensityDuration;
+
+    // Use the non-linear curve (sin^power) mapped to this period
+    const baseIntensity = Math.sin(dayProgress * Math.PI); // 0 -> 1 -> 0
+    const adjustedIntensity = Math.pow(baseIntensity, 0.7); // Flatten peak, steepen sides
+
+    return Math.max(0, Math.min(1, adjustedIntensity)); // Clamp 0-1
+}
 // --- End Utility Functions ---
 
 // --- Coordinate Mapping Functions ---
@@ -493,68 +549,86 @@ function stopRenderLoop() {
 }
 
 // function for Day Night cycle
-function updateDayNightCycle() {
-    if (!directionalLight || !ambientLight || !scene) return; // Safety check
+// --- Main Update Function (Continuous Lerp with Keyframes) ---
+function updateDayNightCycle(currentTime: Date | null = null) {
+    if (!directionalLight || !ambientLight || !hemisphereLight || !scene) return;
 
-    const date = new Date();
-    const currentHour = date.getHours() + date.getMinutes() / 60; // Get hour with fractional minutes
+    const now = currentTime || new Date();
+    const currentHour = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+    let cycleProgress = currentHour / 24; // Normalized time (0.0 to 1.0)
 
-    let sunAngle = 0; // Angle representing sun position (-PI/2 sunrise, 0 midday, PI/2 sunset)
-    let timeProgress = 0; // 0 at sunrise, 1 at sunset
-    let dayFactor = 0; // 0 at horizon, 1 at midday (based on sun height)
+    // --- 1. Calculate Sun/Moon Position (Always Continuous) ---
+    const angle = (cycleProgress - 0.25) * Math.PI * 2; // 6 AM = East horizon
+    const lightX = Math.cos(angle) * SUN_DISTANCE;
+    const lightY = Math.sin(angle) * SUN_DISTANCE;
+    const lightZ = SUN_DISTANCE * 0.1;
+    directionalLight.position.set(lightX, lightY, lightZ);
+    directionalLight.target.position.set(0, 0, 0);
+    directionalLight.target.updateMatrixWorld();
 
-    if (currentHour >= SUNRISE_HOUR && currentHour < SUNSET_HOUR) {
-        // --- Daytime ---
-        timeProgress = (currentHour - SUNRISE_HOUR) / DAY_DURATION_HOURS; // Progress from 0 to 1
-        sunAngle = (timeProgress - 0.5) * Math.PI; // Angle from -PI/2 to PI/2
-        dayFactor = Math.cos(sunAngle); // Intensity factor (0 -> 1 -> 0)
+    // --- 2. Calculate Intensities (Using the helper function) ---
+    const intensityFactor = getIntensityFactor(cycleProgress);
+    directionalLight.intensity = MIN_DIRECTIONAL_INTENSITY + intensityFactor * (MAX_DIRECTIONAL_INTENSITY - MIN_DIRECTIONAL_INTENSITY);
+    ambientLight.intensity = MIN_AMBIENT_INTENSITY + intensityFactor * (MAX_AMBIENT_INTENSITY - MIN_AMBIENT_INTENSITY);
+    hemisphereLight.intensity = MIN_HEMISPHERE_INTENSITY + intensityFactor * (MAX_HEMISPHERE_INTENSITY - MIN_HEMISPHERE_INTENSITY);
 
-        // Calculate Position
-        const lightX = Math.sin(sunAngle) * -SUN_DISTANCE;
-        const lightY = dayFactor * SUN_DISTANCE; // Y position directly related to dayFactor
-        const lightZ = SUN_DISTANCE * 0.4; // Keep Z somewhat constant or vary slightly
+    // --- 3. Calculate Colors (Continuous Lerp through Keyframes) ---
+    let skyColorStart: THREE.Color, skyColorEnd: THREE.Color;
+    let groundColorStart: THREE.Color, groundColorEnd: THREE.Color;
+    let segmentProgress = 0; // Lerp factor (0-1) for the current segment
 
-        directionalLight.position.set(lightX, lightY, lightZ);
-        directionalLight.intensity = dayFactor * MAX_DIRECTIONAL_INTENSITY;
-        ambientLight.intensity = MIN_AMBIENT_INTENSITY + dayFactor * (MAX_AMBIENT_INTENSITY - MIN_AMBIENT_INTENSITY);
-
-        // Calculate Background Color (blend between sunrise/day/sunset)
-        if (timeProgress < 0.5) { // Morning: Sunrise -> Day
-            // Interpolate based on how far into the morning we are (0 to 1)
-            const morningProgress = timeProgress * 2;
-            currentSkyColor.lerpColors(SUNRISE_SKY_COLOR, DAY_SKY_COLOR, morningProgress);
-        } else { // Afternoon: Day -> Sunset
-            // Interpolate based on how far into the afternoon we are (0 to 1)
-            const afternoonProgress = (timeProgress - 0.5) * 2;
-            currentSkyColor.lerpColors(DAY_SKY_COLOR, SUNSET_SKY_COLOR, afternoonProgress);
-        }
-
-    } else {
-        // --- Nighttime ---
-        directionalLight.intensity = MIN_DIRECTIONAL_INTENSITY_NIGHT;
-        ambientLight.intensity = MIN_AMBIENT_INTENSITY;
-        currentSkyColor.copy(NIGHT_SKY_COLOR); // Use night color directly
-
-        // Optional: Position the light somewhere below the horizon or opposite side
-        // Find how far into the night we are
-        let nightHour = currentHour < SUNRISE_HOUR ? currentHour + 24 : currentHour; // Adjust hours past midnight
-        let nightProgress = (nightHour - SUNSET_HOUR) / (24 - DAY_DURATION_HOURS); // 0 at sunset, 1 at sunrise
-        // Simple low-arc position for "moon" (optional, could be fixed)
-        let moonAngle = (nightProgress - 0.5) * Math.PI * 0.8 + Math.PI; // Offset arc below horizon
-        directionalLight.position.set(
-            Math.sin(moonAngle) * -SUN_DISTANCE * 0.5,
-            Math.cos(moonAngle) * SUN_DISTANCE * 0.3, // Lower arc
-            SUN_DISTANCE * 0.4
-        );
+    /// Determine segment and calculate lerp factor
+    if (cycleProgress >= MIDNIGHT_POINT && cycleProgress < SUNRISE_PEAK_POINT) {
+        // Night -> Peak Sunrise
+        skyColorStart = NIGHT_SKY_COLOR; skyColorEnd = SUNRISE_SKY_COLOR;
+        groundColorStart = NIGHT_GROUND_COLOR; groundColorEnd = SUNRISE_GROUND_COLOR;
+        // Calculate progress from midnight to sunrise peak
+        segmentProgress = cycleProgress / SUNRISE_PEAK_POINT;
+    } else if (cycleProgress >= SUNRISE_PEAK_POINT && cycleProgress < MIDDAY_POINT) {
+        // Peak Sunrise -> Midday Day
+        skyColorStart = SUNRISE_SKY_COLOR; skyColorEnd = DAY_SKY_COLOR;
+        groundColorStart = SUNRISE_GROUND_COLOR; groundColorEnd = DAY_GROUND_COLOR;
+        // Calculate progress within this segment
+        segmentProgress = (cycleProgress - SUNRISE_PEAK_POINT) / (MIDDAY_POINT - SUNRISE_PEAK_POINT);
+    } else if (cycleProgress >= MIDDAY_POINT && cycleProgress < SUNSET_PEAK_POINT) {
+        // Midday Day -> Peak Sunset
+        skyColorStart = DAY_SKY_COLOR; skyColorEnd = SUNSET_SKY_COLOR;
+        groundColorStart = DAY_GROUND_COLOR; groundColorEnd = SUNSET_GROUND_COLOR;
+        // Calculate progress within this segment
+        segmentProgress = (cycleProgress - MIDDAY_POINT) / (SUNSET_PEAK_POINT - MIDDAY_POINT);
+    } else if (cycleProgress >= SUNSET_PEAK_POINT && cycleProgress < SUNSET_END_POINT) {
+        // Peak Sunset -> End of Sunset (transitioning towards night)
+        skyColorStart = SUNSET_SKY_COLOR; skyColorEnd = NIGHT_SKY_COLOR; // Aim for night color by sunset end
+        groundColorStart = SUNSET_GROUND_COLOR; groundColorEnd = NIGHT_GROUND_COLOR;
+        // Calculate progress within this segment
+        segmentProgress = (cycleProgress - SUNSET_PEAK_POINT) / (SUNSET_END_POINT - SUNSET_PEAK_POINT);
+    } else { // cycleProgress >= SUNSET_END_POINT up to NEXT_MIDNIGHT_POINT
+        // Deep Night (after sunset fully ended)
+        skyColorStart = NIGHT_SKY_COLOR; skyColorEnd = NIGHT_SKY_COLOR; // Stays night color
+        groundColorStart = NIGHT_GROUND_COLOR; groundColorEnd = NIGHT_GROUND_COLOR; // Stays night ground
+        segmentProgress = 0; // No change needed, lerp factor is 0
     }
 
-    // Apply the calculated background color
-    scene.background = currentSkyColor; // Assign the updated color object
+    // Apply the color lerp
+    // Since start/end colors are always assigned, we can directly lerp.
+    // currentSkyColor starts as skyColorStart and lerps towards skyColorEnd.
+    currentSkyColor.copy(skyColorStart).lerp(skyColorEnd, segmentProgress);
+    currentGroundColor.copy(groundColorStart).lerp(groundColorEnd, segmentProgress);
 
-    // Important: Target might need update if light moves far, ensure shadows work
-    // If the main target is (0,0,0), this might not be strictly needed, but good practice
-    directionalLight.target.updateMatrixWorld();
-    // Shadow camera helper would need updating if used:
+    // --- 4. Apply Colors and Fog ---
+    scene.background = currentSkyColor;
+    ambientLight.color.copy(currentSkyColor); // Ambient follows sky
+    hemisphereLight.color.copy(currentSkyColor); // Hemi sky follows sky
+    hemisphereLight.groundColor.copy(currentGroundColor); // Hemi ground follows ground lerp
+
+    if (scene.fog instanceof THREE.Fog || scene.fog instanceof THREE.FogExp2) {
+       scene.fog.color.copy(currentSkyColor);
+       // Add optional fog density/distance adjustments based on intensityFactor here if desired
+    } else {
+       // Initialize fog if it doesn't exist
+       //scene.fog = new THREE.Fog(currentSkyColor.clone(), 50, 150);
+    }
+
     // shadowHelper?.update();
 }
 
@@ -1295,7 +1369,7 @@ onMount(() => {
 	if (!container) return;
 
 	scene = new THREE.Scene();
-	scene.background = new THREE.Color(0xf4f1de);
+	scene.background = new THREE.Color(0xffffff);
 
 	// Initialize or Load State BEFORE setting up camera/renderer etc.
 	const loaded = loadGardenState(); // Calls placeObjectAt which calls requestRender
@@ -1322,7 +1396,12 @@ onMount(() => {
 	container.appendChild(renderer.domElement);
 
 	ambientLight = new THREE.AmbientLight(0xffffff, MAX_AMBIENT_INTENSITY); // Start with day intensity
-    scene.add(ambientLight);
+	scene.add(ambientLight);
+
+	hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, MAX_HEMISPHERE_INTENSITY); // Start with day intensity
+	scene.add(hemisphereLight);
+
+	scene.fog = new THREE.Fog(0xffffff, 25, 50);
 
 	directionalLight = new THREE.DirectionalLight(0xffffff, MAX_DIRECTIONAL_INTENSITY); // Start with day intensity
 	// NOTE: We will override the position dynamically now. Setting an initial reasonable one.
@@ -1348,7 +1427,7 @@ onMount(() => {
 	// scene.add(shadowHelper); // Add temporarily to see the shadow box
 
 	const groundGeometry = new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE);
-	const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x81b29a, side: THREE.DoubleSide });
+	const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x5C946E, side: THREE.DoubleSide });
 	ground = new THREE.Mesh(groundGeometry, groundMaterial);
 	ground.rotation.x = -Math.PI / 2;
 	ground.position.y = -0.01;
