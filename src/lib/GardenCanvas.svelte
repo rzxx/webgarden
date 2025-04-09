@@ -110,6 +110,14 @@ type SerializableGridCell = SerializablePlantInfo | SerializableDecorInfo | null
 type SerializableGardenGrid = SerializableGridCell[][];
 // --- End Types ---
 
+// --- Active Update Tracking ---
+// Set to hold only PlantInfo objects that currently require
+// checks for growth or thirst in the render/update loop.
+let updatablePlants: Set<PlantInfo> = new Set();
+// Set to hold references to ALL PlantInfo objects currently placed in the garden.
+let allPlants: Set<PlantInfo> = new Set();
+// --- End Active Update Tracking ---
+
 /// --- Bounding Boxes ---
 interface DraggingItem {
     objectType: 'plant' | 'decor';
@@ -233,9 +241,6 @@ let animationFrameId: number | undefined = undefined; // Keep using the existing
 
 // Flag to know if we are currently interacting (dragging, etc.)
 let isInteracting: boolean = false;
-
-// Flag to know if any plant is actively growing and needs animation
-let activeGrowthOccurring: boolean = false;
 
 const clock = new THREE.Clock(); // Add a clock for delta time
 
@@ -495,34 +500,66 @@ function startRenderLoop() {
 }
 
 /**
- * Periodically checks if background processes (like growth) require a render frame.
- * Day/night checks are handled separately when idle.
+ * Periodically checks if background plant processes require a render frame.
+ * Checks active growers AND checks idle plants for thirst.
  */
  function performBackgroundCheck() {
-    // Only request render if:
-    // 1. Main loop ISN'T running
-    // 2. Active GROWTH is occurring
-    if (!isRenderLoopActive && activeGrowthOccurring) {
-        // console.log("Growth Background check: Growth detected, requesting render.");
-        requestRender(); // Request a single frame to update growth visuals
+    const now = Date.now();
+    let needsRender = false;
+    let needsSaveFromBackground = false;
+
+    // --- Check 1: Are there plants actively growing? ---
+    // If this set has items, they need processing in renderFrame (for growth).
+    if (updatablePlants.size > 0) {
+        needsRender = true; // Request render for growth updates
+        // console.log(`Background Check: ${updatablePlants.size} growing plants require render.`);
     }
-    // No longer checks for day/night here
+
+    // --- Check 2: Check ALL plants for becoming thirsty (if they aren't already thirsty) ---
+    for (const plantInfo of allPlants) {
+        // Only check healthy plants
+        if (plantInfo.state === 'healthy') {
+            const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+            if ((now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
+                // --- This healthy plant has become thirsty! ---
+                plantInfo.state = 'needs_water';
+                plantInfo.lastUpdateTime = now; // Update time
+                needsSaveFromBackground = true; // State changed, need to save
+                console.log(`Background Check: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] became thirsty.`);
+
+                // Update visuals IMMEDIATELY
+                updatePlantVisuals(plantInfo);
+
+                // Request render to SHOW the visual change
+                needsRender = true;
+            }
+        }
+    }
+
+    // --- Trigger Actions ---
+    if (needsSaveFromBackground) {
+        saveGardenState(); // NOTE: Still needs debouncing!
+    }
+
+    // Request render ONLY if the loop isn't running AND we determined a render is needed
+    if (!isRenderLoopActive && needsRender) {
+        // console.log("Background Check: Requesting single render frame.");
+        requestRender();
+    }
+     // else { console.log(`Background check: Skipped render (Loop Active or no render needed)`); }
 }
 
 /**
  * Periodically checks if the day/night cycle needs updating WHEN the garden is
- * otherwise completely idle (no interaction, no growth).
+ * otherwise completely idle (no interaction, no plant updates needed).
  */
  function performIdleBackgroundCheck() {
-    // Only request render if:
-    // 1. Main loop ISN'T running
-    // 2. There is NO active growth occurring
-    // 3. We are NOT currently interacting (safety check, though loop should handle interaction)
-    if (!isRenderLoopActive && !activeGrowthOccurring && !isInteracting) {
+    // Request render ONLY if loop isn't running AND NO plants need updates AND not interacting
+    if (!isRenderLoopActive && updatablePlants.size === 0 && !isInteracting) {
         // console.log("Idle Day/Night check: Requesting render for time update.");
         requestRender(); // Request a single frame JUST to update day/night visuals
     }
-     // else { console.log("Idle Day/Night check: Skipped (Loop Active or Growth Occurring or Interacting)"); }
+     // else { console.log(`Idle Day/Night check: Skipped (Loop Active or Plants Need Update [${updatablePlants.size}] or Interacting)`); }
 }
 
 /** Stops the continuous render loop if it's running. */
@@ -735,6 +772,15 @@ function removeGridObjectAt(row: number, col: number) {
         const typeId = 'plantTypeId' in gridObjectInfo ? gridObjectInfo.plantTypeId : gridObjectInfo.decorTypeId;
         console.log(`Removing ${objectType} ${typeId} originating at [${gridObjectInfo.gridPos.row}, ${gridObjectInfo.gridPos.col}]`);
 
+		// --- Remove from updatablePlants set IF it's a plant ---
+		if ('plantTypeId' in gridObjectInfo) { // Check if it's a plant
+			allPlants.delete(gridObjectInfo); // Remove from master list
+			if (updatablePlants.has(gridObjectInfo)) {
+				updatablePlants.delete(gridObjectInfo);
+				console.log(`Plant [${gridObjectInfo.gridPos.row}, ${gridObjectInfo.gridPos.col}] removed from updatable list. Size: ${updatablePlants.size}`);
+			}
+    	}
+
         // 2. Get size and original position
         const { size, gridPos } = gridObjectInfo;
 
@@ -807,6 +853,18 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
             mesh: newMesh
         };
         newGridObject = newPlant;
+		allPlants.add(newPlant); // Add to the master list
+		if (newPlant.state === 'healthy' && newPlant.growthProgress < 1.0) {
+			updatablePlants.add(newPlant);
+			// console.log(...) // Keep logs if desired
+		}
+
+		// Add to the update set if it's healthy and can grow
+		if (newPlant.state === 'healthy' && newPlant.growthProgress < 1.0) {
+			updatablePlants.add(newPlant);
+			console.log(`Plant [${row}, ${col}] added to updatable list (initial placement). Size: ${updatablePlants.size}`);
+		}
+
         updatePlantVisuals(newPlant); // Set initial scale, Y position for plants
 
     } else { // objectType === 'decor'
@@ -882,10 +940,23 @@ function waterPlantAt(row: number, col: number) {
 			updatePlantVisuals(plantInfo); // Update visuals
 			stateChanged = true;
 			timeUpdated = true;
+
+			// Add back to updatable list ONLY if it can now grow
+            // const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default; // NOTE: don't know why AI thinks config is needed here?
+            if (plantInfo.growthProgress < 1.0) {
+                 // Only add if not fully grown
+                 updatablePlants.add(plantInfo);
+                 console.log(`   Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] added back to updatable list (can grow). Size: ${updatablePlants.size}`);
+                 // Request a render if the loop isn't active, as growth might start now
+                 if (!isRenderLoopActive) requestRender();
+            } else {
+                 console.log(`   Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] is healthy but fully grown, not added to updatable list.`);
+            }
 		} else {
 			plantInfo.lastWateredTime = now; // Reset thirst timer
 			console.log(`   Plant was already healthy, reset thirst timer.`);
 			timeUpdated = true;
+			// No change needed to updatablePlants list if already healthy
 			// TODO: Add feedback even if already healthy
 		}
 
@@ -1044,6 +1115,7 @@ function loadGardenState() {
                                 gridPos: { row: r, col: c }
                             };
                             newGridObject = loadedPlant;
+							allPlants.add(loadedPlant); // Add to the master list
 
                             // Plant specific loading steps
                             updatePlantGrowth(loadedPlant); // Offline growth
@@ -1053,6 +1125,12 @@ function loadGardenState() {
                                 loadedPlant.state = 'needs_water';
                             }
                             updatePlantVisuals(loadedPlant); // Set visual state
+
+							// Add to updatable list *after* determining its current state
+							if ((loadedPlant.state === 'healthy' && loadedPlant.growthProgress < 1.0) || loadedPlant.state === 'needs_water') {
+								updatablePlants.add(loadedPlant);
+								console.log(`Loaded Plant [${r}, ${c}] added to updatable list. Size: ${updatablePlants.size}`);
+							}
 
                         } else if (savedCell.type === 'decor') {
                             const decorData = savedCell; // Now correctly typed
@@ -1292,77 +1370,99 @@ function renderFrame() {
 	renderRequested = false;
 	animationFrameId = undefined; // Clear the ID for this frame
 
+	// --- Always update day/night when a frame runs ---
 	updateDayNightCycle();
 
 	const now = Date.now();
-	let needsSave = false;
-	let visualChangeOccurred = false; // Track if anything visually changed this frame
-	activeGrowthOccurring = false; // Reset growth flag for this frame
+    let needsSave = false;
+    let visualChangeOccurred = false; // Track if anything visually changed this frame
 
-	// --- Live Update Loop ---
-	for (let r = 0; r < GRID_DIVISIONS; r++) {
-		for (let c = 0; c < GRID_DIVISIONS; c++) {
-			const cell = gardenGrid[r]?.[c];
-			if (cell && 'plantTypeId' in cell) {
-				const plantInfo = cell;
-				let stateChangedThisFrame = false;
+	// --- List to track plants that become idle this frame ---
+    const plantsToRemoveFromUpdateList: PlantInfo[] = [];
 
-				// --- Check for Thirst ---
-				const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
-                if (plantInfo.state === 'healthy' && (now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
-                    plantInfo.state = 'needs_water';
-                    stateChangedThisFrame = true;
-                    needsSave = true;
-                    visualChangeOccurred = true;
-                }
+	// --- Iterate ONLY over plants potentially needing updates ---
+    for (const plantInfo of updatablePlants) {
+        let shouldBeRemoved = false;
+        let needsVisualUpdate = false; // Track if *this* plant needs visuals updated
 
-                // --- Growth Update ---
-                const growthHappened = updatePlantGrowth(plantInfo);
-                if (growthHappened) {
-                    visualChangeOccurred = true;
-                }
+        // --- Check for Thirst ---
+        const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+        if (plantInfo.state === 'healthy' && (now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
+            // --- Became Thirsty ---
+            plantInfo.state = 'needs_water';
+            plantInfo.lastUpdateTime = now; // Update timestamp
+            needsSave = true;
+            console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] became thirsty.`);
+            // Update visuals IMMEDIATELY
+            updatePlantVisuals(plantInfo);
+            visualChangeOccurred = true; // Mark change occurred this frame
+            // Mark for removal from the *growth* update list because it stopped growing
+            shouldBeRemoved = true;
+        } else if (plantInfo.state === 'healthy') {
+            // --- Growth Update ---
+            // Only grow if healthy
+            const growthHappened = updatePlantGrowth(plantInfo);
+            if (growthHappened) {
+                needsVisualUpdate = true;
+            }
 
-                // Track if *any* plant is still growing
-                if (plantInfo.state === 'healthy' && plantInfo.growthProgress < 1.0) {
-                    activeGrowthOccurring = true;
-                }
+            // Check if growth finished *this frame*
+            if (plantInfo.growthProgress >= 1.0) {
+                console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] finished growing.`);
+                shouldBeRemoved = true; // Mark for removal, growth is complete
+            }
+        } else {
+            // If it was already thirsty when entering the loop (shouldn't happen with new logic, but safe)
+             plantInfo.lastUpdateTime = now; // Keep timestamp fresh
+             shouldBeRemoved = true; // Ensure it's marked for removal if somehow still in the list
+        }
 
-                // --- Update Plant Visuals ---
-                if (stateChangedThisFrame || growthHappened) {
-                    updatePlantVisuals(plantInfo);
-                }
-			}
-			// --- No updates needed for DecorInfo within this loop ---
-            // (Decor is static after placement for now)
-		}
-	}
+        // --- Update Plant Visuals (if needed for growth) ---
+        if (needsVisualUpdate && !shouldBeRemoved) { // Only update if still healthy/growing
+             updatePlantVisuals(plantInfo);
+             visualChangeOccurred = true;
+        }
 
-	// --- Save State ---
-	if (needsSave) {
-		// saveGardenState implicitly calls requestRender if needed
-		saveGardenState();
-	}
+        // --- Mark for removal if needed ---
+		if (shouldBeRemoved) {
+			plantsToRemoveFromUpdateList.push(plantInfo);
+			// console.log(`Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] marked for removal from update list (became thirsty or finished growing).`);
+        }
+    } // --- End loop over updatablePlants ---
+
+	// --- Remove plants that became idle/thirsty this frame ---
+    if (plantsToRemoveFromUpdateList.length > 0) {
+        for (const plantToRemove of plantsToRemoveFromUpdateList) {
+            updatablePlants.delete(plantToRemove);
+        }
+        console.log(`Removed ${plantsToRemoveFromUpdateList.length} plants from update list. New size: ${updatablePlants.size}`);
+    }
+
+	// --- Save State (if needed) ---
+    if (needsSave) {
+        // NOTE: This save is still frequent! We will fix this next.
+        saveGardenState();
+    }
 
 	// --- Render Scene ---
-	// We always render if this function is called, either by the loop or requestRender
-	renderer.render(scene, camera);
+    // We always render if this function is called, either by the loop or requestRender
+    renderer.render(scene, camera);
 
-	// --- Decide whether to continue the loop ---
-	// Continue if:
-	// 1. The loop is *supposed* to be active (isRenderLoopActive is true)
-	// AND
-	// 2. EITHER the user is interacting.
-	const shouldContinueLoop = isRenderLoopActive && isInteracting;
+    // --- Decide whether to continue the loop ---
+    // Loop continues ONLY during interaction. Growth updates outside interaction rely on background checks.
+    const shouldContinueLoop = isRenderLoopActive && isInteracting;
 
-	if (shouldContinueLoop) {
-		// Request the next frame for the continuous loop
-		animationFrameId = requestAnimationFrame(renderFrame);
-	} else if (isRenderLoopActive) {
-		// The loop was active, but conditions to continue are no longer met. Stop it.
-		console.log("Auto-stopping render loop (no interaction or active growth).");
-		stopRenderLoop(); // This also cancels any potential pending animationFrameId
-	}
-	// If !isRenderLoopActive, this was a single requested frame, so we do nothing more.
+    if (shouldContinueLoop) {
+        // Request the next frame for the continuous loop (during interaction)
+        animationFrameId = requestAnimationFrame(renderFrame);
+    } else if (isRenderLoopActive) {
+        // Loop was active, but interaction stopped. Stop the loop.
+        // Background interval will take over if non-interacting updates are needed.
+        console.log("Interaction stopped. Stopping continuous render loop.");
+        stopRenderLoop(); // This also cancels any potential pending animationFrameId and restarts background checks
+    }
+    // If !isRenderLoopActive, this was a single requested frame (e.g., from background check),
+    // so we do nothing more. The background check *might* request another frame later if needed.
 }
 
 onMount(() => {
@@ -1500,22 +1600,6 @@ onMount(() => {
          idleDayNightCheckIntervalId = window.setInterval(performIdleBackgroundCheck, IDLE_DAYNIGHT_UPDATE_INTERVAL_MS);
          console.log(`Started idle day/night check interval initially (${IDLE_DAYNIGHT_UPDATE_INTERVAL_MS}ms)`);
     }
-	
-	// --- Calculate Initial Growth State ---
-	// We still need to know if growth is happening so the *first*
-	// background check performs correctly. Recalculate after load/init.
-	activeGrowthOccurring = false;
-	for (let r = 0; r < GRID_DIVISIONS; r++) {
-		for (let c = 0; c < GRID_DIVISIONS; c++) {
-			const cell = gardenGrid[r]?.[c];
-			if (cell && 'plantTypeId' in cell && cell.state === 'healthy' && cell.growthProgress < 1.0) {
-				activeGrowthOccurring = true;
-				break; // Found one, no need to check further
-			}
-		}
-		if(activeGrowthOccurring) break;
-	}
-	console.log("Initial active growth status check:", activeGrowthOccurring);
 
 	// *** Trigger initial Day/Night update ***
 	updateDayNightCycle(); // Set initial state based on current time
