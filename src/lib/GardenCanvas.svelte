@@ -231,6 +231,9 @@ let hemisphereLight: THREE.HemisphereLight | null = null;
 // Reusable Color objects for lerping to avoid GC overhead
 const currentSkyColor = new THREE.Color();
 const currentGroundColor = new THREE.Color();
+
+// To check how long since background update
+let lastDayNightUpdateMinute: number = -1;
 // --- End Day/Night Cycle ---
 
 let container: HTMLDivElement;
@@ -634,7 +637,7 @@ function stopRenderLoop() {
 
 // function for Day Night cycle
 // --- Main Update Function ---
-function updateDayNightCycle(currentTime: Date | null = null) {
+function updateDayNightCycle(currentTime: Date) {
     if (!directionalLight || !ambientLight || !hemisphereLight || !scene) return;
 
     const now = currentTime || new Date();
@@ -1573,12 +1576,19 @@ function renderFrame() {
 	renderRequested = false;
 	animationFrameId = undefined; // Clear the ID for this frame
 
-	// --- Always update day/night when a frame runs ---
-	updateDayNightCycle();
+	// --- Conditional Day/Night Update ---
+    const now = new Date(); // Get current time once per frame
+    const currentMinute = now.getMinutes();
 
-	const now = Date.now();
+    if (currentMinute !== lastDayNightUpdateMinute) {
+        // console.log(`Updating Day/Night Cycle: Minute changed from ${lastDayNightUpdateMinute} to ${currentMinute}`);
+        updateDayNightCycle(now); // Pass the 'now' Date object to avoid getting time again
+        lastDayNightUpdateMinute = currentMinute; // Update the cache
+    }
+    // --- End Conditional Day/Night Update -
+
     let needsSave = false;
-    let visualChangeOccurred = false; // Track if anything visually changed this frame
+	const nowTimestamp = now.getTime();
 
 	// --- List to track plants that become idle this frame ---
     const plantsToRemoveFromUpdateList: PlantInfo[] = [];
@@ -1590,15 +1600,14 @@ function renderFrame() {
 
         // --- Check for Thirst ---
         const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
-        if (plantInfo.state === 'healthy' && (now - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
+        if (plantInfo.state === 'healthy' && (nowTimestamp - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
             // --- Became Thirsty ---
             plantInfo.state = 'needs_water';
-            plantInfo.lastUpdateTime = now; // Update timestamp
+            plantInfo.lastUpdateTime = nowTimestamp; // Update timestamp
             needsSave = true;
             console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] became thirsty.`);
             // Update visuals IMMEDIATELY
             updatePlantVisuals(plantInfo);
-            visualChangeOccurred = true; // Mark change occurred this frame
             // Mark for removal from the *growth* update list because it stopped growing
             shouldBeRemoved = true;
         } else if (plantInfo.state === 'healthy') {
@@ -1616,14 +1625,13 @@ function renderFrame() {
             }
         } else {
             // If it was already thirsty when entering the loop (shouldn't happen with new logic, but safe)
-             plantInfo.lastUpdateTime = now; // Keep timestamp fresh
+             plantInfo.lastUpdateTime = nowTimestamp; // Keep timestamp fresh
              shouldBeRemoved = true; // Ensure it's marked for removal if somehow still in the list
         }
 
         // --- Update Plant Visuals (if needed for growth) ---
         if (needsVisualUpdate && !shouldBeRemoved) { // Only update if still healthy/growing
              updatePlantVisuals(plantInfo);
-             visualChangeOccurred = true;
         }
 
         // --- Mark for removal if needed ---
@@ -1872,7 +1880,10 @@ onMount(() => {
     }
 
 	// *** Trigger initial Day/Night update ***
-	updateDayNightCycle(); // Set initial state based on current time
+	const initialTime = new Date();
+	updateDayNightCycle(initialTime); // Set initial state based on current time
+    lastDayNightUpdateMinute = initialTime.getMinutes(); // Cache the initial minute
+    console.log(`Initial Day/Night update done for minute: ${lastDayNightUpdateMinute}`);
 
 	// onDestroy return function remains the same conceptually
 	return () => {
