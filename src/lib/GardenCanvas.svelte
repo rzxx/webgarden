@@ -161,6 +161,7 @@ const decorGeometry = placeholderGeometry; // Reuse box for simplicity initially
 
 // To optimize updates, track the last grid cell the preview was drawn at
 let lastPreviewGridPos: { row: number; col: number } | null = null;
+const THROTTLE_DRAGOVER_MS = 75;
 /// --- End Bounding Boxes ---
 
 // --- Day/Night Cycle Configuration ---
@@ -280,19 +281,18 @@ const colorSegments: ColorSegment[] = [
 // --- End Day Night Cycle Utility ---
 
 // --- Utility Functions ---
-/* function throttle<T extends (...args: any[]) => any>(func: T, limit: number): (...args: Parameters<T>) => void {
-	let inThrottle: boolean;
-	let lastResult: ReturnType<T>;
-	return function(this: ThisParameterType<T>, ...args: Parameters<T>): void {
-		if (!inThrottle) {
-			inThrottle = true;
-			lastResult = func.apply(this, args); // Execute immediately the first time
-			setTimeout(() => inThrottle = false, limit);
-		}
-		// We could optionally store the last args and call again after the timeout
-		// if needed, but for resize/drag, just limiting the rate is often enough.
-	}
-} */
+function throttle<T extends (...args: any[]) => any>(func: T, limit: number): (...args: Parameters<T>) => void {
+    let inThrottle: boolean = false;
+    return function(this: ThisParameterType<T>, ...args: Parameters<T>): void {
+        if (!inThrottle) {
+            func.apply(this, args); // Execute immediately
+            inThrottle = true;
+            setTimeout(() => inThrottle = false, limit);
+        }
+        // Note: This version doesn't queue the last call if it was throttled.
+        // For dragover, this is usually acceptable.
+    }
+}
 
 function debounce<T extends (...args: any[]) => any>(func: T, delay: number): { (...args: Parameters<T>): void; flush: () => void; cancel: () => void } {
 	let timeoutId: number | undefined;
@@ -1013,47 +1013,96 @@ function handleCanvasPointerDown(event: PointerEvent) {
 	const intersects = raycaster.intersectObjects(scene.children, true); // `true` for recursive check
 
 	let interactionOccurred = false;
-	if (intersects.length > 0) {
-		// Loop through intersected objects (sorted by distance)
-		for (const intersect of intersects) {
-			const intersectedObject = intersect.object;
+    let plantOrDecorHitInfo: { info: PlantInfo | DecorInfo, type: 'plant' | 'decor' } | null = null;
+    let groundHitPoint: THREE.Vector3 | null = null;
 
-			// Check if the intersected object is a Mesh and has our specific userData
-			if (intersectedObject instanceof THREE.Mesh && intersectedObject.userData.gridPos && intersectedObject.userData.objectType) {
-				const hitGridPos = intersectedObject.userData.gridPos as { row: number; col: number };
-                const objectType = intersectedObject.userData.objectType as 'plant' | 'decor';
+	// --- Phase 1: Check for direct hit on Plant/Decor ---
+    if (intersects.length > 0) {
+        for (const intersect of intersects) {
+            const intersectedObject = intersect.object;
 
-				console.log(`Raycast hit ${objectType} mesh associated with grid pos [${hitGridPos.row}, ${hitGridPos.col}]`);
+            if (intersectedObject instanceof THREE.Mesh && intersectedObject.userData.gridPos && intersectedObject.userData.objectType) {
+                // Directly hit a plant or decor mesh!
+                const hitGridPos = intersectedObject.userData.gridPos as { row: number; col: number };
+                // Use getGridObjectInfoAt to ensure we get the main object info, not a pointer cell's info
+                const objectInfo = getGridObjectInfoAt(hitGridPos.row, hitGridPos.col);
 
-				switch (currentAction.toolType) {
-					case 'water':
-					if (objectType === 'plant') { // Can only water plants
-						console.log(`Attempting to water Plant at [${hitGridPos.row}, ${hitGridPos.col}]`);
-						waterPlantAt(hitGridPos.row, hitGridPos.col);
-						interactionOccurred = true;
-					} else {
-						console.log("Water tool clicked on decor, doing nothing.");
-					}
-					break;
-					case 'remove':
-						// Can remove both plants and decor
-                        console.log(`Attempting to remove ${objectType} at [${hitGridPos.row}, ${hitGridPos.col}]`);
-                        removeGridObjectAt(hitGridPos.row, hitGridPos.col); // Use generic remover
-                        interactionOccurred = true;
-                        break;
-					default:
-						console.log("Unknown tool selected on plant click:", currentAction.toolType);
-			}
-			if (interactionOccurred) break; // Interact with first hit object only
-			}
-			// Optional: Add checks here if you want to interact with other object types (like the ground)
-			// else if (intersectedObject === ground) {
-			//     console.log("Raycast hit ground.");
-			// }
-		} // End loop through intersects
+                if (objectInfo) {
+                    const objectType = 'plantTypeId' in objectInfo ? 'plant' : 'decor';
+                    plantOrDecorHitInfo = { info: objectInfo, type: objectType };
+                    console.log(`Raycast direct hit on ${objectType} originating at [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}]`);
+                    break; // Found the primary target, stop searching intersects
+                }
+            } else if (intersect.object === ground && !groundHitPoint) {
+                 // Record the first ground hit point, in case we don't hit a plant/decor directly
+                 groundHitPoint = intersect.point;
+            }
+        }
+    }
 
-	} // End if intersects.length > 0
-	isInteracting = false; // Interaction ends immediately for tools
+    // --- Phase 2: Perform Action based on Tool and Hit Result ---
+    if (currentAction.toolType === 'water') {
+        if (plantOrDecorHitInfo?.type === 'plant') {
+            // Direct hit on a plant - water it
+            console.log(`Watering plant directly at [${plantOrDecorHitInfo.info.gridPos.row}, ${plantOrDecorHitInfo.info.gridPos.col}]`);
+            waterPlantAt(plantOrDecorHitInfo.info.gridPos.row, plantOrDecorHitInfo.info.gridPos.col);
+            interactionOccurred = true;
+        } else if (groundHitPoint) {
+            // No direct plant hit, but hit the ground. Check the grid cell.
+            const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
+            if (gridCoords) {
+                const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
+                if (objectInCell && 'plantTypeId' in objectInCell) {
+                    // Found a plant in the grid cell clicked - water it
+                    console.log(`Watering plant via ground click at grid [${gridCoords.row}, ${gridCoords.col}], target: [${objectInCell.gridPos.row}, ${objectInCell.gridPos.col}]`);
+                    waterPlantAt(gridCoords.row, gridCoords.col); // Use clicked coords, waterPlantAt resolves pointer
+                    interactionOccurred = true;
+                } else {
+                     console.log(`Ground click at [${gridCoords.row}, ${gridCoords.col}], but no plant found.`);
+                }
+            }
+        } else {
+             console.log("Water tool clicked, but missed plant and ground?");
+        }
+
+    } else if (currentAction.toolType === 'remove') {
+        if (plantOrDecorHitInfo) {
+            // Direct hit on plant or decor - remove it
+            const info = plantOrDecorHitInfo.info;
+            console.log(`Removing ${plantOrDecorHitInfo.type} directly at [${info.gridPos.row}, ${info.gridPos.col}]`);
+            removeGridObjectAt(info.gridPos.row, info.gridPos.col);
+            interactionOccurred = true;
+        } else if (groundHitPoint) {
+            // No direct hit, but hit the ground. Check the grid cell.
+            const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
+            if (gridCoords) {
+                const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
+                if (objectInCell) {
+                    // Found *something* (plant or decor) in the grid cell - remove it
+                    const objectType = 'plantTypeId' in objectInCell ? 'plant' : 'decor';
+                    console.log(`Removing ${objectType} via ground click at grid [${gridCoords.row}, ${gridCoords.col}], target: [${objectInCell.gridPos.row}, ${objectInCell.gridPos.col}]`);
+                    removeGridObjectAt(gridCoords.row, gridCoords.col); // Use clicked coords, removeGridObjectAt resolves pointer
+                    interactionOccurred = true;
+                } else {
+                     console.log(`Ground click at [${gridCoords.row}, ${gridCoords.col}], but no object found to remove.`);
+                }
+            }
+        } else {
+             console.log("Remove tool clicked, but missed object and ground?");
+        }
+    }
+    // Add other tool handlers here if needed ('place' tool doesn't use click, it uses drag/drop)
+	// End if intersects.length > 0
+	// --- Finalization ---
+    isInteracting = false; // Interaction ends immediately for tools
+
+    // Request render if an action occurred *while idle*
+    // Note: place/remove/water functions already handle their own render requests now.
+    // This check might be redundant, but safe to keep.
+    // if (interactionOccurred && !isRenderLoopActive) {
+        // console.log("Tool interaction completed while idle, ensuring render request.");
+        // requestRender(); // The action functions should cover this
+    // }
 }
 
 // --- Persistence Functions ---
@@ -1255,46 +1304,58 @@ function performResize() {
 // debounced resizeHandler
 const resizeHandler = debounce(performResize, 150);
 
-// Drag n Drop
-function handleDragOver(event: DragEvent) {
-	event.preventDefault(); // Necessary to allow drop
-	if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+// --- Throttled Drag Over Logic ---
+const throttledDragOverLogic = throttle((event: DragEvent, mouse: THREE.Vector2, camera: THREE.OrthographicCamera, ground: THREE.Mesh) => {
+    // Raycast to find grid position
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObject(ground);
 
-	// --- Preview Update Logic ---
-	// Use the generic draggingItem state
-    if (!draggingItem || !isRenderLoopActive) return; // Check if dragging anything valid
+    if (intersects.length > 0) {
+        const intersectPoint = intersects[0].point;
+        const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
 
-	// Raycast to find grid position (similar to handleDrop/handlePointerDown)
-	const rect = container.getBoundingClientRect();
-	const mouseX = event.clientX - rect.left;
-	const mouseY = event.clientY - rect.top;
-	const mouse = new THREE.Vector2(
-		(mouseX / rect.width) * 2 - 1,
-		-(mouseY / rect.height) * 2 + 1
-	);
-	const raycaster = new THREE.Raycaster();
-	raycaster.setFromCamera(mouse, camera);
-	const intersects = raycaster.intersectObject(ground);
-
-	if (intersects.length > 0) {
-		const intersectPoint = intersects[0].point;
-		const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
-
-		if (gridCoords) {
-			// Optimization: Only update if grid cell changed
-			if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
-                // Pass the objectType and typeId to updatePreviewBox
+        if (gridCoords && draggingItem) { // Ensure draggingItem is still valid
+            // Optimization: Only update if grid cell changed
+            if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
                 updatePreviewBox(gridCoords.row, gridCoords.col, draggingItem.objectType, draggingItem.typeId);
             }
-		} else {
-			// Mouse is over the canvas but outside the grid
-			hidePreviewBox();
-		}
-	} else {
-		// Mouse is not even over the ground plane (might be over UI elements on canvas?)
-		hidePreviewBox();
-	}
-	// --- End Preview Update Logic ---
+        } else {
+            // Mouse is over the canvas but outside the grid OR draggingItem is lost
+            hidePreviewBox();
+        }
+    } else {
+        // Mouse is not even over the ground plane
+        hidePreviewBox();
+    }
+}, THROTTLE_DRAGOVER_MS);
+// --- End Throttled Drag Over Logic ---
+
+// Modify handleDragOver to use the throttled function
+function handleDragOver(event: DragEvent) {
+    event.preventDefault(); // Needs to happen *every* time
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; // Needs to happen *every* time
+
+    // --- Preview Update Logic (Now Throttled) ---
+    if (!draggingItem || !isRenderLoopActive) {
+         // If not dragging or loop isn't active (shouldn't happen if drag started correctly),
+         // ensure preview is hidden, but don't do expensive checks.
+         hidePreviewBox();
+         return;
+    }
+
+    // Calculate mouse coords (needed for the throttled function)
+    const rect = container.getBoundingClientRect();
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+    const mouse = new THREE.Vector2(
+        (mouseX / rect.width) * 2 - 1,
+        -(mouseY / rect.height) * 2 + 1
+    );
+
+    // Call the throttled logic
+    throttledDragOverLogic(event, mouse, camera, ground);
+    // --- End Preview Update Logic ---
 }
 
 // Keep your existing handleDrop, but add preview hiding
@@ -1622,7 +1683,7 @@ onMount(() => {
 		saveGardenState(); // Ensure final save
 	};
 	// --- Other Listeners ---
-	window.addEventListener('resize', resizeHandler); // Use throttled version
+	window.addEventListener('resize', resizeHandler); // Use debounced version
 	if (typeof window !== 'undefined') {
 		window.addEventListener('beforeunload', handleBeforeUnload);
 	}
