@@ -110,13 +110,15 @@ type SerializableGridCell = SerializablePlantInfo | SerializableDecorInfo | null
 type SerializableGardenGrid = SerializableGridCell[][];
 // --- End Types ---
 
-// --- Active Update Tracking ---
+// --- Grid Objects tracking ---
 // Set to hold only PlantInfo objects that currently require
 // checks for growth or thirst in the render/update loop.
 let updatablePlants: Set<PlantInfo> = new Set();
 // Set to hold references to ALL PlantInfo objects currently placed in the garden.
 let allPlants: Set<PlantInfo> = new Set();
-// --- End Active Update Tracking ---
+// Set to hold references to ALL DecorInfo objects currently placed in the garden.
+let allDecor: Set<DecorInfo> = new Set();
+// --- Grid Objects tracking ---
 
 /// --- Bounding Boxes ---
 interface DraggingItem {
@@ -222,8 +224,6 @@ let renderer: THREE.WebGLRenderer;
 let scene: THREE.Scene;
 let camera: THREE.OrthographicCamera;
 let ground: THREE.Mesh;
-let saveIntervalId: number | undefined = undefined;
-const SAVE_INTERVAL_MS = 15000;
 
 // Configuration for background updates (can be adjusted or made dynamic later)
 const BACKGROUND_UPDATE_INTERVAL_MS = 500; // Check for growth/dynamics every 500ms (2fps) - adjust as needed
@@ -538,7 +538,7 @@ function startRenderLoop() {
 
     // --- Trigger Actions ---
     if (needsSaveFromBackground) {
-        saveGardenState(); // NOTE: Still needs debouncing!
+        debouncedSaveGardenState(); // Use debounced version
     }
 
     // Request render ONLY if the loop isn't running AND we determined a render is needed
@@ -772,19 +772,22 @@ function removeGridObjectAt(row: number, col: number) {
         const typeId = 'plantTypeId' in gridObjectInfo ? gridObjectInfo.plantTypeId : gridObjectInfo.decorTypeId;
         console.log(`Removing ${objectType} ${typeId} originating at [${gridObjectInfo.gridPos.row}, ${gridObjectInfo.gridPos.col}]`);
 
-		// --- Remove from updatablePlants set IF it's a plant ---
-		if ('plantTypeId' in gridObjectInfo) { // Check if it's a plant
-			allPlants.delete(gridObjectInfo); // Remove from master list
-			if (updatablePlants.has(gridObjectInfo)) {
-				updatablePlants.delete(gridObjectInfo);
-				console.log(`Plant [${gridObjectInfo.gridPos.row}, ${gridObjectInfo.gridPos.col}] removed from updatable list. Size: ${updatablePlants.size}`);
+		// --- Remove from appropriate set ---
+		if (objectType === 'plant') {
+			allPlants.delete(gridObjectInfo as PlantInfo); // Already exists
+			if (updatablePlants.has(gridObjectInfo as PlantInfo)) {
+				updatablePlants.delete(gridObjectInfo as PlantInfo);
 			}
-    	}
+		} else if (objectType === 'decor') {
+			allDecor.delete(gridObjectInfo as DecorInfo);
+		}
+		// --- End removal from set ---
 
         // 2. Get size and original position
         const { size, gridPos } = gridObjectInfo;
 
         // 3. Remove Mesh & Dispose Geometry (Material disposal handled globally if shared)
+		const meshToRemove = gridObjectInfo.mesh; // Keep reference for render check
         scene.remove(gridObjectInfo.mesh);
         gridObjectInfo.mesh.geometry.dispose(); // Dispose instance geometry
         gridObjectInfo.mesh = undefined; // Clear reference
@@ -801,8 +804,13 @@ function removeGridObjectAt(row: number, col: number) {
         }
 
         // 5. Save State
-        saveGardenState();
+        debouncedSaveGardenState(); // Use debounced version
 
+		// 6. Request Render if Idle
+        if (!isRenderLoopActive && meshToRemove) { // Check meshToRemove ensure removal happened
+			console.log("Requesting render after removing object while idle.");
+			requestRender();
+        }
     } else {
         console.log(`No grid object found at or pointed to by [${row}, ${col}] to remove.`);
     }
@@ -884,6 +892,7 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
             rotationY: rotationY,
         };
         newGridObject = newDecor;
+		allDecor.add(newDecor);
         newMesh.rotation.y = rotationY; // Set initial rotation
         // Decor likely sits flat, adjust Y based on geometry if needed
         // Assuming box geometry centered at origin:
@@ -915,7 +924,13 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     }
 
     // 6. Save state
-    saveGardenState();
+    debouncedSaveGardenState(); // Use debounced version
+
+	// 7. Request Render if Idle
+	if (!isRenderLoopActive) {
+		console.log("Requesting render after placing object while idle.");
+		requestRender();
+    }
 }
 // --- End Function to Place Grid Object ---
 
@@ -928,7 +943,7 @@ function waterPlantAt(row: number, col: number) {
 	if (gridObjectInfo && 'plantTypeId' in gridObjectInfo) {
 		const plantInfo = gridObjectInfo; // We know it's a plant now
 		console.log(`Watering plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] (triggered from [${row}, ${col}])`);
-		let stateChanged = false;
+		let visualStateChanged = false;
 		let timeUpdated = false;
 		const now = Date.now();
 
@@ -938,7 +953,7 @@ function waterPlantAt(row: number, col: number) {
             plantInfo.lastWateredTime = now; // Update last watered time
 			console.log(`   Plant is now healthy.`);
 			updatePlantVisuals(plantInfo); // Update visuals
-			stateChanged = true;
+			visualStateChanged = true;
 			timeUpdated = true;
 
 			// Add back to updatable list ONLY if it can now grow
@@ -960,8 +975,15 @@ function waterPlantAt(row: number, col: number) {
 			// TODO: Add feedback even if already healthy
 		}
 
-		if (stateChanged || timeUpdated) {
-			saveGardenState();
+		// Trigger Save and Render
+		if (visualStateChanged || timeUpdated) { // If state OR timer changed
+            if(visualStateChanged && !isRenderLoopActive){
+                 // If the visuals actually changed (went from thirsty to healthy)
+                 // and the loop isn't already running, request a single frame.
+                 console.log("Requesting render due to visual state change on watering.");
+                 requestRender();
+            }
+			debouncedSaveGardenState(); // Save state (debounced)
 		}
 	} else if (gridObjectInfo) {
          console.log(`Cannot water object at [${row}, ${col}], it's other object.`);
@@ -1035,36 +1057,52 @@ function handleCanvasPointerDown(event: PointerEvent) {
 }
 
 // --- Persistence Functions ---
+// Debounce saveGardenState with a delay (e.g., 1.5 seconds)
+const DEBOUNCED_SAVE_DELAY_MS = 1500;
+const debouncedSaveGardenState = debounce(saveGardenState, DEBOUNCED_SAVE_DELAY_MS);
+
+// Original save function
 function saveGardenState() {
 	try {
 		if (typeof localStorage === 'undefined') {
 			console.warn("localStorage not available, cannot save state.");
 			return;
 		}
-		// Create a serializable grid containing ONLY the serializable info objects
+		console.log(`Attempting save at ${new Date().toLocaleTimeString()} using Set iteration.`); // Log method
+
+        // 1. Initialize the target structure (still a grid for loading compatibility)
 		const serializableGrid: SerializableGardenGrid = Array(GRID_DIVISIONS).fill(null).map(() => Array(GRID_DIVISIONS).fill(null));
 
-		for (let r = 0; r < GRID_DIVISIONS; r++) {
-			for (let c = 0; c < GRID_DIVISIONS; c++) {
-				const cell = gardenGrid[r][c];
-				// Only save if it's the main PlantInfo (not null, not a pointer)
-				if (!cell || 'pointerTo' in cell) {
-                    serializableGrid[r][c] = null; // Save pointers/null as null
-                } else if ('plantTypeId' in cell) {
-                    // It's PlantInfo
-                    const { mesh, gridPos, ...rest } = cell;
-                    serializableGrid[r][c] = { ...rest, type: 'plant' }; // Add type:'plant'
-                } else if ('decorTypeId' in cell) {
-                    // It's DecorInfo
-                    const { mesh, gridPos, ...rest } = cell;
-                    serializableGrid[r][c] = { ...rest, type: 'decor' }; // Add type:'decor'
-                }
-			}
-		}
+        // 2. Populate the grid from the 'allPlants' set
+        for (const plantInfo of allPlants) {
+            const { row, col } = plantInfo.gridPos; // Get the top-left corner
+            // Basic bounds check (safety)
+            if (row >= 0 && row < GRID_DIVISIONS && col >= 0 && col < GRID_DIVISIONS) {
+                 // Create the serializable version (excluding mesh, gridPos)
+                 const { mesh, gridPos, ...serializableData } = plantInfo;
+                 serializableGrid[row][col] = { ...serializableData, type: 'plant' };
+            } else {
+                console.warn(`Plant with id ${plantInfo.plantTypeId} has invalid gridPos [${row}, ${col}] during save.`);
+            }
+        }
 
+        // 3. Populate the grid from the 'allDecor' set
+        for (const decorInfo of allDecor) {
+            const { row, col } = decorInfo.gridPos; // Get the top-left corner
+            // Basic bounds check (safety)
+             if (row >= 0 && row < GRID_DIVISIONS && col >= 0 && col < GRID_DIVISIONS) {
+                // Create the serializable version (excluding mesh, gridPos)
+                 const { mesh, gridPos, ...serializableData } = decorInfo;
+                 serializableGrid[row][col] = { ...serializableData, type: 'decor' };
+            } else {
+                console.warn(`Decor with id ${decorInfo.decorTypeId} has invalid gridPos [${row}, ${col}] during save.`);
+            }
+        }
+
+        // 4. Serialize and save the constructed grid
 		localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(serializableGrid));
-		// console.log("Garden state saved."); // Less verbose saving log
-		requestRender(); // Request render AFTER saving state (maybe state change needs visual update)
+		console.log(`Garden state saved. Saved ${allPlants.size} plants and ${allDecor.size} decor items.`);
+
 	} catch (error) {
 		console.error("Failed to save garden state:", error);
 	}
@@ -1147,6 +1185,7 @@ function loadGardenState() {
                                 // rotationY is already in decorData
                             };
                             newGridObject = loadedDecor;
+							allDecor.add(loadedDecor);
 
                             // Decor specific loading steps
                             newMesh.rotation.y = loadedDecor.rotationY;
@@ -1362,7 +1401,11 @@ function handleDragLeave(event: DragEvent) {
 // Add handleBeforeUnload (Moved outside onMount)
 function handleBeforeUnload(event: BeforeUnloadEvent) {
 	console.log('beforeunload triggered, saving state...');
-	saveGardenState();
+	debouncedSaveGardenState.flush(); // Force immediate execution if pending
+    // We might call the original function too as a final guarantee,
+    // although flush() should handle it if a change was pending.
+    // Let's rely on flush for now. If issues arise, we can add:
+    // saveGardenState();
 };
 
 function renderFrame() {
@@ -1440,8 +1483,7 @@ function renderFrame() {
 
 	// --- Save State (if needed) ---
     if (needsSave) {
-        // NOTE: This save is still frequent! We will fix this next.
-        saveGardenState();
+        debouncedSaveGardenState(); // Use debounced version
     }
 
 	// --- Render Scene ---
@@ -1588,8 +1630,6 @@ onMount(() => {
 	clock.start();
 	// Perform initial resize and render
 	performResize(); // Calls requestRender
-	// Start periodic save timer
-	saveIntervalId = window.setInterval(() => saveGardenState(), SAVE_INTERVAL_MS);
 
 	// Start background intervals (neither should be running yet)
     if (backgroundCheckIntervalId === undefined) {
@@ -1619,16 +1659,16 @@ onMount(() => {
 onDestroy(() => {
 	stopRenderLoop(); // Explicitly stop the loop on destroy
 	if (typeof window !== 'undefined') {
-		window.removeEventListener('beforeunload', handleBeforeUnload);
-	}
-	saveGardenState(); // Final save attempt
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+    }
+    console.log('onDestroy triggered, flushing pending save...');
+    debouncedSaveGardenState.flush(); // Force immediate execution
 
 	if (animationFrameId !== undefined){
 		cancelAnimationFrame(animationFrameId);
 	}
 
 	// Clear intervals
-    if (saveIntervalId !== undefined) clearInterval(saveIntervalId);
     if (backgroundCheckIntervalId !== undefined) {
         clearInterval(backgroundCheckIntervalId);
         console.log("Stopped growth check interval.");
