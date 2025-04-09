@@ -241,6 +241,39 @@ const clock = new THREE.Clock(); // Add a clock for delta time
 
 const LOCAL_STORAGE_KEY = 'gardenSaveData'; // Key for localStorage
 
+// --- Day Night Cycle Utility ---
+// --- Define Color Segments Data Structure ---
+interface ColorSegment {
+    startPoint: number;
+    endPoint: number;
+    skyStart: THREE.Color;
+    skyEnd: THREE.Color;
+    groundStart: THREE.Color;
+    groundEnd: THREE.Color;
+    isNight?: boolean; // Optional flag for the constant night segment
+}
+
+// Define the segments in chronological order
+const colorSegments: ColorSegment[] = [
+    // Night before sunrise
+    { startPoint: MIDNIGHT_POINT, endPoint: SUNRISE_START_POINT, skyStart: NIGHT_SKY_COLOR, skyEnd: NIGHT_SKY_COLOR, groundStart: NIGHT_GROUND_COLOR, groundEnd: NIGHT_GROUND_COLOR, isNight: true },
+    // Sunrise Start -> Peak
+    { startPoint: SUNRISE_START_POINT, endPoint: SUNRISE_PEAK_POINT, skyStart: NIGHT_SKY_COLOR, skyEnd: SUNRISE_SKY_COLOR, groundStart: NIGHT_GROUND_COLOR, groundEnd: SUNRISE_GROUND_COLOR },
+    // Sunrise Peak -> End (Day Color)
+    { startPoint: SUNRISE_PEAK_POINT, endPoint: SUNRISE_END_POINT, skyStart: SUNRISE_SKY_COLOR, skyEnd: DAY_SKY_COLOR, groundStart: SUNRISE_GROUND_COLOR, groundEnd: DAY_GROUND_COLOR },
+    // Morning -> Midday
+    { startPoint: SUNRISE_END_POINT, endPoint: MIDDAY_POINT, skyStart: DAY_SKY_COLOR, skyEnd: MIDDAY_SKY_COLOR, groundStart: DAY_GROUND_COLOR, groundEnd: MIDDAY_GROUND_COLOR },
+    // Midday -> Afternoon (before Sunset Start)
+    { startPoint: MIDDAY_POINT, endPoint: SUNSET_START_POINT, skyStart: MIDDAY_SKY_COLOR, skyEnd: DAY_SKY_COLOR, groundStart: MIDDAY_GROUND_COLOR, groundEnd: DAY_GROUND_COLOR },
+    // Sunset Start -> Peak
+    { startPoint: SUNSET_START_POINT, endPoint: SUNSET_PEAK_POINT, skyStart: DAY_SKY_COLOR, skyEnd: SUNSET_SKY_COLOR, groundStart: DAY_GROUND_COLOR, groundEnd: SUNSET_GROUND_COLOR },
+    // Sunset Peak -> End (Night Color)
+    { startPoint: SUNSET_PEAK_POINT, endPoint: SUNSET_END_POINT, skyStart: SUNSET_SKY_COLOR, skyEnd: NIGHT_SKY_COLOR, groundStart: SUNSET_GROUND_COLOR, groundEnd: NIGHT_GROUND_COLOR },
+    // Night after sunset
+    { startPoint: SUNSET_END_POINT, endPoint: NEXT_MIDNIGHT_POINT, skyStart: NIGHT_SKY_COLOR, skyEnd: NIGHT_SKY_COLOR, groundStart: NIGHT_GROUND_COLOR, groundEnd: NIGHT_GROUND_COLOR, isNight: true },
+];
+// --- End Day Night Cycle Utility ---
+
 // --- Utility Functions ---
 /* function throttle<T extends (...args: any[]) => any>(func: T, limit: number): (...args: Parameters<T>) => void {
 	let inThrottle: boolean;
@@ -292,7 +325,7 @@ function debounce<T extends (...args: any[]) => any>(func: T, delay: number): { 
 // --- Helper: Calculate segment progress ---
 function calculateSegmentProgress(cycleProgress: number, startPoint: number, endPoint: number): number {
     const segmentDuration = endPoint - startPoint;
-    if (segmentDuration === 0) return 0;
+    if (segmentDuration <= 0) return 0; // Avoid division by zero or negative duration
     const progressInSegment = cycleProgress - startPoint;
     return Math.max(0, Math.min(1, progressInSegment / segmentDuration));
 }
@@ -535,115 +568,65 @@ function updateDayNightCycle(currentTime: Date | null = null) {
     const currentHour = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
     const cycleProgress = currentHour / 24;
 
-    // --- Determine Color Segment and Lerp Colors (Based on detailed time points) ---
-    let skyColorStart: THREE.Color, skyColorEnd: THREE.Color;
-    let groundColorStart: THREE.Color, groundColorEnd: THREE.Color;
-    let colorSegmentProgress = 0; // Progress used specifically for color lerping
+    // --- Find Active Color Segment ---
+    // Find the *first* segment where the current time is less than the end point.
+    const activeSegment = colorSegments.find(segment => cycleProgress < segment.endPoint);
 
-    // This logic remains the same as the previous version, focusing only on color transitions
-    if (cycleProgress >= SUNSET_END_POINT || cycleProgress < SUNRISE_START_POINT) {
-        skyColorStart = NIGHT_SKY_COLOR; skyColorEnd = NIGHT_SKY_COLOR;
-        groundColorStart = NIGHT_GROUND_COLOR; groundColorEnd = NIGHT_GROUND_COLOR;
-        colorSegmentProgress = 0;
-    } else if (cycleProgress >= SUNRISE_START_POINT && cycleProgress < SUNRISE_PEAK_POINT) {
-        skyColorStart = NIGHT_SKY_COLOR; skyColorEnd = SUNRISE_SKY_COLOR;
-        groundColorStart = NIGHT_GROUND_COLOR; groundColorEnd = SUNRISE_GROUND_COLOR;
-        colorSegmentProgress = calculateSegmentProgress(cycleProgress, SUNRISE_START_POINT, SUNRISE_PEAK_POINT);
-    } else if (cycleProgress >= SUNRISE_PEAK_POINT && cycleProgress < SUNRISE_END_POINT) {
-        skyColorStart = SUNRISE_SKY_COLOR; skyColorEnd = DAY_SKY_COLOR;
-        groundColorStart = SUNRISE_GROUND_COLOR; groundColorEnd = DAY_GROUND_COLOR;
-        colorSegmentProgress = calculateSegmentProgress(cycleProgress, SUNRISE_PEAK_POINT, SUNRISE_END_POINT);
-    } else if (cycleProgress >= SUNRISE_END_POINT && cycleProgress < MIDDAY_POINT) {
-        skyColorStart = DAY_SKY_COLOR; skyColorEnd = MIDDAY_SKY_COLOR;
-        groundColorStart = DAY_GROUND_COLOR; groundColorEnd = MIDDAY_GROUND_COLOR;
-        colorSegmentProgress = calculateSegmentProgress(cycleProgress, SUNRISE_END_POINT, MIDDAY_POINT);
-    } else if (cycleProgress >= MIDDAY_POINT && cycleProgress < SUNSET_START_POINT) {
-        skyColorStart = MIDDAY_SKY_COLOR; skyColorEnd = DAY_SKY_COLOR;
-        groundColorStart = MIDDAY_GROUND_COLOR; groundColorEnd = DAY_GROUND_COLOR;
-        colorSegmentProgress = calculateSegmentProgress(cycleProgress, MIDDAY_POINT, SUNSET_START_POINT);
-    } else if (cycleProgress >= SUNSET_START_POINT && cycleProgress < SUNSET_PEAK_POINT) {
-        skyColorStart = DAY_SKY_COLOR; skyColorEnd = SUNSET_SKY_COLOR;
-        groundColorStart = DAY_GROUND_COLOR; groundColorEnd = SUNSET_GROUND_COLOR;
-        colorSegmentProgress = calculateSegmentProgress(cycleProgress, SUNSET_START_POINT, SUNSET_PEAK_POINT);
-    } else { // SUNSET_PEAK_POINT to SUNSET_END_POINT
-        skyColorStart = SUNSET_SKY_COLOR; skyColorEnd = NIGHT_SKY_COLOR;
-        groundColorStart = SUNSET_GROUND_COLOR; groundColorEnd = NIGHT_GROUND_COLOR;
-        colorSegmentProgress = calculateSegmentProgress(cycleProgress, SUNSET_PEAK_POINT, SUNSET_END_POINT);
+    // Default to the last segment (night after sunset) if something goes wrong or cycleProgress is exactly 1.0
+    const currentSegment = activeSegment ?? colorSegments[colorSegments.length - 1];
+
+    // --- Lerp Colors ---
+    let colorSegmentProgress = 0;
+    if (!currentSegment.isNight) { // Only calculate progress if it's not a constant night segment
+        colorSegmentProgress = calculateSegmentProgress(
+            cycleProgress,
+            currentSegment.startPoint,
+            currentSegment.endPoint
+        );
     }
+    currentSkyColor.copy(currentSegment.skyStart).lerp(currentSegment.skyEnd, colorSegmentProgress);
+    currentGroundColor.copy(currentSegment.groundStart).lerp(currentSegment.groundEnd, colorSegmentProgress);
 
-    // Apply the color lerp using colorSegmentProgress
-    currentSkyColor.copy(skyColorStart).lerp(skyColorEnd, colorSegmentProgress);
-    currentGroundColor.copy(groundColorStart).lerp(groundColorEnd, colorSegmentProgress);
 
-    // --- Calculate Sun Angle (Derived solely from major time points) ---
+    // --- Calculate Sun Angle (Derived from major time points) ---
+    // This logic remains separate as it uses different key points than the detailed color segments
     let currentAngle: number;
-
-    // Check if it's daytime (between sunrise start and sunset end)
-    if (cycleProgress >= SUNRISE_START_POINT && cycleProgress < SUNSET_END_POINT) {
-        // Determine if morning or afternoon based on MIDDAY_POINT
-        if (cycleProgress < MIDDAY_POINT) {
-            // Morning: Map progress from SUNRISE_START_POINT to MIDDAY_POINT onto angle 0 to PI/2
-            currentAngle = MathUtils.mapLinear(
-                cycleProgress,               // Value to map
-                SUNRISE_START_POINT,         // Input range start
-                MIDDAY_POINT,                // Input range end
-                0,                           // Output range start (Horizon East)
-                Math.PI / 2                  // Output range end (Zenith)
-            );
-        } else {
-            // Afternoon: Map progress from MIDDAY_POINT to SUNSET_END_POINT onto angle PI/2 to PI
-            currentAngle = MathUtils.mapLinear(
-                cycleProgress,               // Value to map
-                MIDDAY_POINT,                // Input range start
-                SUNSET_END_POINT,            // Input range end
-                Math.PI / 2,                 // Output range start (Zenith)
-                Math.PI                      // Output range end (Horizon West)
-            );
-        }
-    } else {
-        // Night time: Map progress from SUNSET_END_POINT around to SUNRISE_START_POINT onto angle PI to 2*PI
+    if (cycleProgress >= SUNRISE_START_POINT && cycleProgress < SUNSET_END_POINT) { // Daytime
+        currentAngle = (cycleProgress < MIDDAY_POINT)
+            ? MathUtils.mapLinear(cycleProgress, SUNRISE_START_POINT, MIDDAY_POINT, 0, Math.PI / 2) // Morning
+            : MathUtils.mapLinear(cycleProgress, MIDDAY_POINT, SUNSET_END_POINT, Math.PI / 2, Math.PI); // Afternoon
+    } else { // Night time
         const nightDuration = (NEXT_MIDNIGHT_POINT - SUNSET_END_POINT) + SUNRISE_START_POINT;
-        let progressThroughNight: number;
-
-        if (cycleProgress >= SUNSET_END_POINT) { // After sunset, before midnight
-            progressThroughNight = (cycleProgress - SUNSET_END_POINT) / nightDuration;
-        } else { // After midnight, before sunrise
-            // Calculate progress from sunset end (wrapping around midnight)
-            progressThroughNight = ((NEXT_MIDNIGHT_POINT - SUNSET_END_POINT) + cycleProgress) / nightDuration;
-        }
-        // Lerp angle from PI (Sunset Horizon West) to 2*PI (Sunrise Horizon East, below horizon)
+        const progressThroughNight = (cycleProgress >= SUNSET_END_POINT)
+            ? (cycleProgress - SUNSET_END_POINT) / nightDuration
+            : ((NEXT_MIDNIGHT_POINT - SUNSET_END_POINT) + cycleProgress) / nightDuration;
         currentAngle = MathUtils.lerp(Math.PI, 2 * Math.PI, progressThroughNight);
     }
 
-    // Ensure angle is within [0, 2*PI) if needed, although sin/cos handle larger angles
-    // currentAngle = currentAngle % (2 * Math.PI);
-
-    // --- Calculate Sun Position from currentAngle ---
-    const lightX = Math.cos(currentAngle) * SUN_DISTANCE;
-    const lightY = Math.sin(currentAngle) * SUN_DISTANCE;
-    const lightZ = SUN_DISTANCE * 0.1; // Optional constant N/S offset
-
-    directionalLight.position.set(lightX, lightY, lightZ);
+    // --- Calculate Sun Position ---
+    const lightY = Math.sin(currentAngle) * SUN_DISTANCE; // Altitude
+    directionalLight.position.set(
+        Math.cos(currentAngle) * SUN_DISTANCE, // X position (East/West)
+        lightY,
+        SUN_DISTANCE * 0.1 // Z offset (optional constant)
+    );
     directionalLight.target.position.set(0, 0, 0);
     directionalLight.target.updateMatrixWorld();
 
-    // --- Calculate Intensities based on Sun Altitude (derived from currentAngle) ---
-    let intensityFactor = Math.sin(currentAngle);
-    intensityFactor = Math.max(0, intensityFactor); // Clamp >= 0
-
-    directionalLight.intensity = MIN_DIRECTIONAL_INTENSITY + intensityFactor * (MAX_DIRECTIONAL_INTENSITY - MIN_DIRECTIONAL_INTENSITY);
-    ambientLight.intensity = MIN_AMBIENT_INTENSITY + intensityFactor * (MAX_AMBIENT_INTENSITY - MIN_AMBIENT_INTENSITY);
-    hemisphereLight.intensity = MIN_HEMISPHERE_INTENSITY + intensityFactor * (MAX_HEMISPHERE_INTENSITY - MIN_HEMISPHERE_INTENSITY);
+    // --- Calculate Intensities ---
+    const intensityFactor = Math.max(0, lightY / SUN_DISTANCE); // Use normalized height (0 to 1)
+    directionalLight.intensity = MathUtils.lerp(MIN_DIRECTIONAL_INTENSITY, MAX_DIRECTIONAL_INTENSITY, intensityFactor);
+    ambientLight.intensity = MathUtils.lerp(MIN_AMBIENT_INTENSITY, MAX_AMBIENT_INTENSITY, intensityFactor);
+    hemisphereLight.intensity = MathUtils.lerp(MIN_HEMISPHERE_INTENSITY, MAX_HEMISPHERE_INTENSITY, intensityFactor);
 
     // --- Apply Colors and Intensities ---
     scene.background = currentSkyColor;
-    if (scene.fog) {
-         scene.fog.color.copy(currentSkyColor);
-    }
-
     ambientLight.color.copy(currentSkyColor);
     hemisphereLight.color.copy(currentSkyColor);
     hemisphereLight.groundColor.copy(currentGroundColor);
+    if (scene.fog) { // Check if fog exists
+         scene.fog.color.copy(currentSkyColor);
+    }
 
     // shadowHelper?.update();
 }
