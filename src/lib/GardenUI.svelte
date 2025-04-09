@@ -1,56 +1,73 @@
 <script lang="ts">
-    import { selectedAction, availablePlants, availableDecor, type SelectedAction } from './stores';
-
-    function selectPlant(plantType: string) {
-        selectedAction.update(current => {
-        const newAction: SelectedAction = { type: 'plant', plantType: plantType };
-        // Toggle: If already selected, deselect, otherwise select
-        return JSON.stringify(current) === JSON.stringify(newAction) ? null : newAction;
-        });
-    }
+    import { selectedAction, availablePlants, availableDecor, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo } from './stores'; // Import new stores
+    import { get } from 'svelte/store'; // Import get
 
     function selectTool(toolType: 'water' | 'remove') {
         selectedAction.update(current => {
-        const newAction: SelectedAction = { type: 'tool', toolType: toolType };
-        return JSON.stringify(current) === JSON.stringify(newAction) ? null : newAction;
+            const newAction: SelectedAction = { type: 'tool', toolType: toolType };
+             // If dragging, cancel drag first
+            if (get(isDraggingItem)) {
+                heldItem.set(null);
+                isDraggingItem.set(false);
+                 // Optionally release pointer capture if held by an item
+                 // This might require tracking the target element
+            }
+            // Toggle tool selection
+            return JSON.stringify(current) === JSON.stringify(newAction) ? null : newAction;
         });
     }
 
-    // --- Modified Drag Start ---
-    // Specific function for starting plant drag
-    function dragStartPlant(event: DragEvent, plantId: string) {
-        if (event.dataTransfer) {
-            console.log("Dragging Plant:", plantId);
-            event.dataTransfer.setData('plantType', plantId); // Use 'plantType' key
-            event.dataTransfer.effectAllowed = 'copy'; // Usually 'copy' for placing new items
-        }
-    }
+    // --- NEW: Pointer Down Handler for Items ---
+    function handleItemPointerDown(event: PointerEvent, itemInfo: HeldItemInfo) {
+        // Prevent default actions like text selection or browser drag behavior
+        event.preventDefault();
 
-    // Specific function for starting decor drag
-    function dragStartDecor(event: DragEvent, decorId: string) {
-        if (event.dataTransfer) {
-            console.log("Dragging Decor:", decorId);
-            event.dataTransfer.setData('decorType', decorId); // Use 'decorType' key
-            event.dataTransfer.effectAllowed = 'copy';
-        }
-    }
-    // --- End Modified Drag Start ---
+        // Clear any selected tool when starting to drag an item
+        selectedAction.set(null);
 
-    // Function to handle drag end (optional: for visual feedback)
-    function dragEnd(event: DragEvent) {
-        // You can add logic here to provide visual feedback after the drag ends
-        // For example, reset the appearance of the dragged element
-    }
+        // Set the item being held and the dragging state
+        heldItem.set(itemInfo);
+        isDraggingItem.set(true);
 
-    // Reactive declaration to get the current value for styling (remains the same)
-    let currentAction: SelectedAction | null = null; // Initialize as potentially null
+        const targetElement = event.target as HTMLElement; // Capture target element
+        targetElement.setPointerCapture(event.pointerId);
+        targetElement.classList.add('grabbing');
+
+        // --- MODIFIED: releaseAndReset only handles UI cleanup ---
+        const releaseAndReset = (e: PointerEvent) => {
+            // Only act on the specific pointer that was captured by this element
+            if (e.pointerId === event.pointerId) {
+                console.log(`UI Item (${itemInfo.typeId}): Releasing pointer capture (${e.type})`);
+                targetElement.releasePointerCapture(event.pointerId);
+                targetElement.classList.remove('grabbing');
+                // Remove these temporary listeners attached TO THIS ELEMENT
+                targetElement.removeEventListener('pointerup', releaseAndReset);
+                targetElement.removeEventListener('pointercancel', releaseAndReset);
+                targetElement.removeEventListener('lostpointercapture', releaseAndReset);
+
+                // --- DO NOT CLEAR heldItem or isDraggingItem here ---
+                // Let the GardenCanvas handle the global state cleanup after placement attempt.
+            }
+        };
+        // --- End Modification ---
+
+        targetElement.addEventListener('pointerup', releaseAndReset);
+        targetElement.addEventListener('pointercancel', releaseAndReset);
+        targetElement.addEventListener('lostpointercapture', releaseAndReset);
+
+        console.log("Pointer down on item:", itemInfo.typeId, " Capturing pointerId:", event.pointerId);
+    }
+    // --- End Pointer Down Handler ---
+
+
+    // Reactive declaration to get the current value for styling
+    let currentAction: SelectedAction | null = null;
     selectedAction.subscribe(value => {
         currentAction = value;
     });
 
-    // Helper to check if an action is currently selected (remains the same)
+    // Helper to check if an action is currently selected
     function isSelected(action: SelectedAction): boolean {
-         // Handle potential null value for currentAction
         if (!currentAction) return false;
         return JSON.stringify(currentAction) === JSON.stringify(action);
     }
@@ -65,12 +82,11 @@
         {#each availablePlants as plant}
         <div
             class="item"
-            draggable="true"
             role="button"
             tabindex="0"
-            aria-label={`Drag ${plant.name}`}
-            on:dragstart={(event) => dragStartPlant(event, plant.id)}
-            on:dragend={dragEnd}
+            aria-label={`Pick up ${plant.name}`}
+            on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
+            style="touch-action: none;"
         >
             {plant.name}
         </div>
@@ -83,12 +99,11 @@
         {#each availableDecor as decor}
         <div
             class="item"
-            draggable="true"
             role="button"
             tabindex="0"
-            aria-label={`Drag ${decor.name}`}
-            on:dragstart={(event) => dragStartDecor(event, decor.id)}
-            on:dragend={dragEnd}
+            aria-label={`Pick up ${decor.name}`}
+            on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
+            style="touch-action: none;"
         >
             {decor.name}
         </div>
@@ -112,9 +127,12 @@
 
     <!-- Display current selection for debugging -->
     {#if currentAction}
-        <p>Selected: {JSON.stringify(currentAction)}</p>
+        <p>Tool: {JSON.stringify(currentAction)}</p>
     {:else}
-        <p>Selected: None</p>
+        <p>Tool: None</p>
+    {/if}
+    {#if $heldItem}
+        <p>Holding: {$heldItem.objectType} - {$heldItem.typeId}</p>
     {/if}
 </div>
 
@@ -168,15 +186,14 @@
         border: 1px solid #888;
         border-radius: 5px;
         background-color: #ddd;
-        cursor: grab; /* Change cursor to grab icon */
+        cursor: grab; /* Use grab cursor */
+        user-select: none; /* Prevent text selection */
+        -webkit-user-select: none; /* Safari */
+        -moz-user-select: none; /* Firefox */
+        -ms-user-select: none; /* IE */
     }
 
     .item:hover {
         background-color: #ccc;
-    }
-
-    .item:active {
-         cursor: grabbing; /* Indicate active drag */
-         background-color: #c0c0c0;
     }
 </style>

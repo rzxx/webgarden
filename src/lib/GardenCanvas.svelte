@@ -2,7 +2,7 @@
 import { onMount, onDestroy } from 'svelte';
 import * as THREE from 'three';
 import { MathUtils } from 'three'; // For mapLinear and lerp
-import { selectedAction, type SelectedAction } from './stores';
+import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo } from './stores';
 import { get } from 'svelte/store';
 //import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
 
@@ -121,11 +121,6 @@ let allDecor: Set<DecorInfo> = new Set();
 // --- Grid Objects tracking ---
 
 /// --- Bounding Boxes ---
-interface DraggingItem {
-    objectType: 'plant' | 'decor';
-    typeId: string;
-}
-let draggingItem: DraggingItem | null = null; // Stores the full info of the item being dragged
 let previewGroup: THREE.Group | null = null; // Group to hold preview plane meshes
 let previewMeshes: THREE.Mesh[] = []; // Array to hold reusable preview plane meshes
 const MAX_PREVIEW_CELLS = 16; // Max anticipated size (e.g., 4x4), adjust if needed
@@ -162,6 +157,10 @@ const decorGeometry = placeholderGeometry; // Reuse box for simplicity initially
 // To optimize updates, track the last grid cell the preview was drawn at
 let lastPreviewGridPos: { row: number; col: number } | null = null;
 const THROTTLE_DRAGOVER_MS = 75;
+
+// --- NEW: State variables to track pointer drag ---
+let currentHeldItem: HeldItemInfo | null = null;
+let isPointerDragging = false; // Local state reflecting the store
 /// --- End Bounding Boxes ---
 
 // --- Instancing
@@ -442,10 +441,10 @@ function updatePlantVisuals(plantInfo: PlantInfo) {
 		const targetColor = plantInfo.state === 'needs_water' ? thirstyColor : healthyColor;
 		// Get the current color to compare (optional optimization)
 		// tempColor.fromArray(instancedMesh.instanceColor.array, plantInfo.instanceId * 3);
-		// if (!tempColor.equals(targetColor)) { // Only update if color actually changed
-		instancedMesh.instanceColor.setXYZ(plantInfo.instanceId, targetColor.r, targetColor.g, targetColor.b);
-		instancedMesh.instanceColor.needsUpdate = true; // Mark color buffer
-		// }
+		if (!tempColor.equals(targetColor)) { // Only update if color actually changed
+            instancedMesh.instanceColor.setXYZ(plantInfo.instanceId, targetColor.r, targetColor.g, targetColor.b);
+            instancedMesh.instanceColor.needsUpdate = true; // Mark color buffer
+		}
 	}
 }
 // --- End Function to Update Plant Visuals ---
@@ -663,7 +662,6 @@ function updateDayNightCycle(currentTime: Date) {
     currentSkyColor.copy(currentSegment.skyStart).lerp(currentSegment.skyEnd, colorSegmentProgress);
     currentGroundColor.copy(currentSegment.groundStart).lerp(currentSegment.groundEnd, colorSegmentProgress);
 
-
     // --- Calculate Sun Angle (Derived from major time points) ---
     // This logic remains separate as it uses different key points than the detailed color segments
     let currentAngle: number;
@@ -694,7 +692,7 @@ function updateDayNightCycle(currentTime: Date) {
     directionalLight.intensity = MathUtils.lerp(MIN_DIRECTIONAL_INTENSITY, MAX_DIRECTIONAL_INTENSITY, intensityFactor);
     ambientLight.intensity = MathUtils.lerp(MIN_AMBIENT_INTENSITY, MAX_AMBIENT_INTENSITY, intensityFactor);
     hemisphereLight.intensity = MathUtils.lerp(MIN_HEMISPHERE_INTENSITY, MAX_HEMISPHERE_INTENSITY, intensityFactor);
-
+    
     // --- Apply Colors and Intensities ---
     scene.background = currentSkyColor;
     ambientLight.color.copy(currentSkyColor);
@@ -1146,6 +1144,13 @@ function waterPlantAt(row: number, col: number) {
 // --- End Function to Water Plant ---
 
 function handleCanvasPointerDown(event: PointerEvent) {
+	// --- Prevent tool action if currently dragging an item ---
+	if (isPointerDragging) {
+        console.log("Canvas pointer down ignored (dragging item).");
+        return;
+    }
+    // --- End Prevent ---
+
 	const currentAction = get(selectedAction);
 	if (currentAction?.type !== 'tool') {
 		return; // Ignore if not a tool action
@@ -1273,6 +1278,154 @@ function handleCanvasPointerDown(event: PointerEvent) {
         // requestRender(); // The action functions should cover this
     // }
 }
+
+// --- NEW: Pointer Move Handler (for dragging items) ---
+// Use throttle settings from the old dragover logic
+const THROTTLE_POINTER_MOVE_MS = 50; // Reduced slightly for responsiveness? Or keep 75ms.
+
+const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
+    if (!isPointerDragging || !currentHeldItem || !container || !camera || !ground) {
+        // console.log("throttledPointerMoveLogic skipped: not dragging or missing refs");
+        return;
+    }
+
+    // Calculate pointer position relative to the canvas container
+    const rect = container.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+
+    // Check if pointer is within canvas bounds (optional, but can prevent unnecessary raycasts)
+    if (pointerX < 0 || pointerX > rect.width || pointerY < 0 || pointerY > rect.height) {
+         // Pointer is outside the canvas, hide preview
+         hidePreviewBox();
+         lastPreviewGridPos = null; // Reset last position
+         // requestRender(); // Hide preview - render loop should be active
+         return;
+    }
+
+
+    // Convert pointer coordinates to normalized device coordinates (NDC)
+    const mouse = new THREE.Vector2(
+        (pointerX / rect.width) * 2 - 1,
+        -(pointerY / rect.height) * 2 + 1
+    );
+
+    // Raycast to find grid position (similar to old dragOver)
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+    const intersects = raycaster.intersectObject(ground);
+
+    if (intersects.length > 0) {
+        const intersectPoint = intersects[0].point;
+        const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
+
+        if (gridCoords) {
+            // Optimization: Only update preview if grid cell changed
+            if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
+                // console.log("Pointer move update preview:", gridCoords);
+                updatePreviewBox(gridCoords.row, gridCoords.col, currentHeldItem.objectType, currentHeldItem.typeId);
+                 // Render loop should be running, no explicit request needed here normally
+                 // if (!isRenderLoopActive) requestRender();
+            }
+        } else {
+            // Pointer is over the canvas but outside the defined grid area
+            // console.log("Pointer move hide preview: outside grid");
+            hidePreviewBox();
+            // if (!isRenderLoopActive) requestRender();
+        }
+    } else {
+        // Pointer is not over the ground plane (e.g., maybe over UI elements temporarily if they overlay)
+         // console.log("Pointer move hide preview: missed ground");
+         hidePreviewBox();
+         // if (!isRenderLoopActive) requestRender();
+    }
+}, THROTTLE_POINTER_MOVE_MS);
+
+function handlePointerMove(event: PointerEvent) {
+    // Only process if dragging an item
+    if (!isPointerDragging || !currentHeldItem) {
+        return;
+    }
+    // Call the throttled logic
+    throttledPointerMoveLogic(event);
+}
+// --- End Pointer Move Handler ---
+
+
+// --- NEW: Pointer Up/Cancel Handler (for placing items) ---
+function handlePointerUpOrCancel(event: PointerEvent) {
+    // Only process if we were actively dragging an item with this pointer
+     if (!isPointerDragging || !currentHeldItem) {
+        // console.log("Pointer up/cancel ignored: not dragging.");
+        return;
+    }
+    // Check if the event's pointerId matches the one that started the drag
+    // (This requires storing the initial pointerId in heldItem store, which we omitted for simplicity)
+    // For now, assume any pointer up/cancel while dragging ends the drag.
+
+    console.log("Pointer up/cancel detected, attempting placement...");
+
+    const itemToPlace = { ...currentHeldItem }; // Capture item info before clearing state
+
+    // --- Clean up drag state ---
+    hidePreviewBox(); // Hide preview immediately
+    heldItem.set(null); // Clear the store
+    isDraggingItem.set(false); // Clear the store
+    // isPointerDragging = false; // Local flag updated via store subscription
+    isInteracting = false; // Stop interaction state
+    stopRenderLoop();   // Stop the render loop explicitly
+    // Note: Pointer capture release is handled by the UI element's own listeners now.
+
+    let placementOccurred = false;
+
+    // --- Placement Logic (similar to old handleDrop) ---
+    // Calculate pointer position relative to the canvas container *at the moment of release*
+    const rect = container.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+
+     // Check if pointer is within canvas bounds for placement
+    if (pointerX >= 0 && pointerX <= rect.width && pointerY >= 0 && pointerY <= rect.height) {
+        const mouse = new THREE.Vector2(
+            (pointerX / rect.width) * 2 - 1,
+            -(pointerY / rect.height) * 2 + 1
+        );
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObject(ground);
+
+        if (intersects.length > 0) {
+            const intersectPoint = intersects[0].point;
+            const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
+            if (gridCoords) {
+                console.log(`Attempting pointer place: ${itemToPlace.objectType} - ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}]`);
+                placeGridObjectAt(
+                    gridCoords.row,
+                    gridCoords.col,
+                    itemToPlace.objectType,
+                    itemToPlace.typeId
+                );
+                // placeGridObjectAt requests render if needed and saves state
+                placementOccurred = true;
+            } else {
+                console.log("Pointer released over canvas, but outside grid.");
+            }
+        } else {
+            console.log("Pointer released over canvas, but missed ground intersection.");
+        }
+    } else {
+         console.log("Pointer released outside canvas bounds.");
+    }
+    // --- End Placement Logic ---
+
+    // If placement didn't happen, we still need to render the hidden preview state
+    if (!placementOccurred) {
+         console.log("Placement did not occur on pointer up/cancel.");
+         // No render needed here, as stopRenderLoop() was called, and hidePreviewBox() doesn't require a render itself.
+         // The scene is now static until the next interaction or background update.
+    }
+}
+// --- End Pointer Up/Cancel Handler ---
 
 // --- Persistence Functions ---
 // Debounce saveGardenState with a delay (e.g., 1.5 seconds)
@@ -1406,161 +1559,6 @@ function performResize() {
 // debounced resizeHandler
 const resizeHandler = debounce(performResize, 150);
 
-// --- Throttled Drag Over Logic ---
-const throttledDragOverLogic = throttle((event: DragEvent, mouse: THREE.Vector2, camera: THREE.OrthographicCamera, ground: THREE.Mesh) => {
-    // Raycast to find grid position
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(mouse, camera);
-    const intersects = raycaster.intersectObject(ground);
-
-    if (intersects.length > 0) {
-        const intersectPoint = intersects[0].point;
-        const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
-
-        if (gridCoords && draggingItem) { // Ensure draggingItem is still valid
-            // Optimization: Only update if grid cell changed
-            if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
-                updatePreviewBox(gridCoords.row, gridCoords.col, draggingItem.objectType, draggingItem.typeId);
-            }
-        } else {
-            // Mouse is over the canvas but outside the grid OR draggingItem is lost
-            hidePreviewBox();
-        }
-    } else {
-        // Mouse is not even over the ground plane
-        hidePreviewBox();
-    }
-}, THROTTLE_DRAGOVER_MS);
-// --- End Throttled Drag Over Logic ---
-
-// Modify handleDragOver to use the throttled function
-function handleDragOver(event: DragEvent) {
-    event.preventDefault(); // Needs to happen *every* time
-    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; // Needs to happen *every* time
-
-    // --- Preview Update Logic (Now Throttled) ---
-    if (!draggingItem || !isRenderLoopActive) {
-         // If not dragging or loop isn't active (shouldn't happen if drag started correctly),
-         // ensure preview is hidden, but don't do expensive checks.
-         hidePreviewBox();
-         return;
-    }
-
-    // Calculate mouse coords (needed for the throttled function)
-    const rect = container.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
-    const mouse = new THREE.Vector2(
-        (mouseX / rect.width) * 2 - 1,
-        -(mouseY / rect.height) * 2 + 1
-    );
-
-    // Call the throttled logic
-    throttledDragOverLogic(event, mouse, camera, ground);
-    // --- End Preview Update Logic ---
-}
-
-// Keep your existing handleDrop, but add preview hiding
-function handleDrop(event: DragEvent) {
-    event.preventDefault();
-    const wasInteracting = isInteracting; // Store state BEFORE clearing
-
-    // --- Stop interaction state and capture item info ---
-    hidePreviewBox(); // Hide preview (scene state change)
-    const itemToPlace = draggingItem; // CAPTURE the item info
-    draggingItem = null; // CLEAR the global dragging state
-    isInteracting = false; // STOP interaction state
-
-    // Explicitly stop the loop *before* placement attempt
-    if (wasInteracting) {
-        stopRenderLoop(); // Ensure loop is stopped
-    }
-    // --- End interaction handling ---
-
-    let placementOccurred = false;
-
-    // --- Placement Logic ---
-    if (itemToPlace) {
-        const rect = container.getBoundingClientRect();
-        const mouseX = event.clientX - rect.left;
-        const mouseY = event.clientY - rect.top;
-        const mouse = new THREE.Vector2((mouseX / rect.width) * 2 - 1, -(mouseY / rect.height) * 2 + 1);
-        const raycaster = new THREE.Raycaster();
-        raycaster.setFromCamera(mouse, camera);
-        const intersects = raycaster.intersectObject(ground);
-
-        if (intersects.length > 0) {
-            const intersectPoint = intersects[0].point;
-            const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
-            if (gridCoords) {
-                // Use the generic placer with info captured from itemToPlace
-                console.log(`Attempting place: ${itemToPlace.objectType} - ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}]`);
-                placeGridObjectAt(
-                    gridCoords.row,
-                    gridCoords.col,
-                    itemToPlace.objectType, // Use objectType from captured item
-                    itemToPlace.typeId      // Use typeId from captured item
-                );
-                placementOccurred = true;
-            } else {
-                console.log("Dropped outside grid.");
-            }
-        } else {
-            console.log("No intersection with ground on drop.");
-        }
-    } else {
-        // This means drag might have started improperly or state got cleared unexpectedly
-        console.log("Drop occurred but no valid 'itemToPlace' was available.");
-    }
-    // --- End Placement Logic ---
-
-    // Request render if placement didn't happen (to show hidden preview)
-    if (!placementOccurred) {
-        console.log("Placement did not occur, requesting render for hidden preview.");
-        requestRender();
-    }
-}
-
-// Add handleDragEnter
-function handleDragEnter(event: DragEvent) {
-	event.preventDefault();
-	// Reset just in case
-    draggingItem = null;
-
-	// Check dataTransfer for either type
-    const plantType = event.dataTransfer?.getData('plantType');
-    const decorType = event.dataTransfer?.getData('decorType');
-
-	let objectType: 'plant' | 'decor' | null = null;
-    let typeId: string | null = null;
-
-    if (plantType && plantConfigs[plantType]) {
-        objectType = 'plant';
-        typeId = plantType;
-    } else if (decorType && decorConfigs[decorType]) {
-        objectType = 'decor';
-        typeId = decorType;
-    }
-
-	if (objectType && typeId) {
-        draggingItem = { objectType, typeId }; // Store the item info
-        isInteracting = true; // START Interaction
-        startRenderLoop();   // START Loop for preview updates
-        console.log(`Dragging ${draggingItem.objectType}:`, draggingItem.typeId);
-    }
-}
-
-// Add handleDragLeave
-function handleDragLeave(event: DragEvent) {
-	if (event.relatedTarget === null || (event.relatedTarget instanceof Node && !container.contains(event.relatedTarget))) {
-        console.log("Drag left container");
-        hidePreviewBox();
-        draggingItem = null; // Clear the dragging item
-        isInteracting = false;
-        stopRenderLoop();
-    }
-}
-
 // Add handleBeforeUnload (Moved outside onMount)
 function handleBeforeUnload(event: BeforeUnloadEvent) {
 	console.log('beforeunload triggered, saving state...');
@@ -1658,9 +1656,12 @@ function renderFrame() {
     // We always render if this function is called, either by the loop or requestRender
     renderer.render(scene, camera);
 
-    // --- Decide whether to continue the loop ---
-    // Loop continues ONLY during interaction. Growth updates outside interaction rely on background checks.
-    const shouldContinueLoop = isRenderLoopActive && isInteracting;
+    // --- Adjust loop continuation logic ---
+    // Loop continues if EITHER a pointer drag is active OR a tool interaction is marked (though tool interaction is very brief)
+    // Let's simplify: loop continues if isInteracting is true.
+    // isInteracting is set true by pointer down (drag start) and by tool click start.
+    // It's set false by pointer up/cancel (drag end) and tool click end.
+    const shouldContinueLoop = isInteracting; // Keep loop running as long as interaction flag is set
 
     if (shouldContinueLoop) {
         // Request the next frame for the continuous loop (during interaction)
@@ -1678,6 +1679,22 @@ function renderFrame() {
 onMount(() => {
 	if (!container) return;
 
+	// --- Subscribe to Pointer Drag Stores ---
+    const unsubHeldItem = heldItem.subscribe(value => { currentHeldItem = value; });
+    const unsubIsDragging = isDraggingItem.subscribe(value => {
+        isPointerDragging = value;
+        if (isPointerDragging && !isInteracting) {
+            // Pointer drag started, ensure interaction state and loop are active
+            console.log("Pointer drag detected, starting interaction loop.");
+            isInteracting = true;
+            startRenderLoop();
+             // Hide tool selection when dragging starts
+            selectedAction.set(null);
+        }
+        // Note: The 'stop' logic is handled within handlePointerUpOrCancel now.
+    });
+    // --- End Subscription ---
+
 	scene = new THREE.Scene();
 	scene.background = new THREE.Color(0xffffff);
 
@@ -1694,8 +1711,8 @@ onMount(() => {
         const geometry = placeholderGeometry;
         // Create a base material that ACCEPTS vertex/instance colors
         const baseMaterial = new THREE.MeshStandardMaterial({
-             // color: 0xffffff, // Start with white, will be modulated by instance color
-             vertexColors: true // IMPORTANT: Enable instance colors
+            color: 0xffffff, // Start with white, will be modulated by instance color
+            vertexColors: true // IMPORTANT: Enable instance colors
          });
 
         const mesh = new THREE.InstancedMesh(geometry, baseMaterial, MAX_INSTANCES_PER_TYPE);
@@ -1711,42 +1728,40 @@ onMount(() => {
         for (let i = 0; i < MAX_INSTANCES_PER_TYPE; i++) {
              healthyColor.toArray(colors, i * 3);
         }
-        geometry.setAttribute('color', colorAttribute); // Add attribute to geometry
-        mesh.instanceColor = colorAttribute; // Keep reference for easier updates later
-        // --- End Instanced Color Attribute ---
-
-        // Set count to 0 initially, we'll increment as we place items
+        // Attach attribute to geometry used by this mesh instance
+        // If geometry is shared, ensure this is handled correctly (cloning might be needed)
+        // Assuming geometry is effectively unique per InstancedMesh instance for attribute purposes:
+        mesh.geometry.setAttribute('color', colorAttribute); // Add color attribute to the geometry instance used by the mesh
+        mesh.instanceColor = colorAttribute; // Keep reference
         mesh.count = 0;
-
         scene.add(mesh);
         instancedMeshes[typeId] = mesh;
-        instanceIdToDataMap.set(mesh.uuid, new Map()); // Initialize inner map
-        console.log(`Created InstancedMesh for plant: ${typeId}`);
+        instanceIdToDataMap.set(mesh.uuid, new Map());
     }
 
     // Create InstancedMesh for each Decor Type
     for (const typeId in decorConfigs) {
-         const config = decorConfigs[typeId];
-         // Use placeholder or specific decor geometry
-         const geometry = decorGeometry; // Reuse box for now
-         const baseMaterial = getDecorMaterial(typeId).clone(); // Use cached material
-         // Ensure decor material also allows vertex colors if needed,
-         // for now, decor doesn't change color, so it might not be strictly necessary
-         // baseMaterial.vertexColors = true; // Add if decor might change color later
+		const config = decorConfigs[typeId];
+		// Use placeholder or specific decor geometry
+		const geometry = decorGeometry; // Reuse box for now
+		const baseMaterial = getDecorMaterial(typeId).clone(); // Use cached material
+		// Ensure decor material also allows vertex colors if needed,
+		// for now, decor doesn't change color, so it might not be strictly necessary
+		// baseMaterial.vertexColors = true; // Add if decor might change color later
 
-         const mesh = new THREE.InstancedMesh(geometry, baseMaterial, MAX_INSTANCES_PER_TYPE);
-         mesh.castShadow = true;
-         mesh.receiveShadow = true;
-         mesh.userData.objectType = 'decor';
-         mesh.userData.typeId = typeId;
+		const mesh = new THREE.InstancedMesh(geometry, baseMaterial, MAX_INSTANCES_PER_TYPE);
+		mesh.castShadow = true;
+		mesh.receiveShadow = true;
+		mesh.userData.objectType = 'decor';
+		mesh.userData.typeId = typeId;
 
-         // Decor doesn't need color attribute *yet* unless its color changes dynamically
+		// Decor doesn't need color attribute *yet* unless its color changes dynamically
 
-         mesh.count = 0;
-         scene.add(mesh);
-         instancedMeshes[typeId] = mesh;
-         instanceIdToDataMap.set(mesh.uuid, new Map());
-         console.log(`Created InstancedMesh for decor: ${typeId}`);
+		mesh.count = 0;
+		scene.add(mesh);
+		instancedMeshes[typeId] = mesh;
+		instanceIdToDataMap.set(mesh.uuid, new Map());
+		console.log(`Created InstancedMesh for decor: ${typeId}`);
     }
     // --- End Initialize Instancing ---
 
@@ -1848,11 +1863,13 @@ onMount(() => {
 	}
 	// --- End Preview Bounding Box Setup ---
 
-	container.addEventListener('dragenter', handleDragEnter);
-	container.addEventListener('dragleave', handleDragLeave);
-	container.addEventListener('dragover', handleDragOver);
-	container.addEventListener('drop', handleDrop);
 	container.addEventListener('pointerdown', handleCanvasPointerDown);
+	// --- Window-Level Pointer Listeners for Dragging ---
+    window.addEventListener('pointermove', handlePointerMove, { passive: false }); // passive: false if preventDefault might be needed
+    window.addEventListener('pointerup', handlePointerUpOrCancel);
+    window.addEventListener('pointercancel', handlePointerUpOrCancel);
+    // Optional: handle lostpointercapture similarly to pointercancel
+    window.addEventListener('lostpointercapture', handlePointerUpOrCancel);
 	// --- End Drag and Drop Setup ---
 
 	const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -1893,6 +1910,9 @@ onMount(() => {
 		stopRenderLoop(); // Ensure loop is stopped here too
 		// Remove listeners added *specifically* within onMount if any were left
 		// (most are handled by onDestroy now)
+		// Unsubscribe from stores
+        unsubHeldItem();
+        unsubIsDragging();
 	};
 });
 
@@ -1921,11 +1941,11 @@ onDestroy(() => {
 	clock.stop();
 	
 	window.removeEventListener('resize', resizeHandler); // Remove throttled version
-	container.removeEventListener('dragenter', handleDragEnter);
-	container.removeEventListener('dragleave', handleDragLeave);
-	container.removeEventListener('dragover', handleDragOver);
-	container.removeEventListener('drop', handleDrop);
 	container.removeEventListener('pointerdown', handleCanvasPointerDown);
+	window.removeEventListener('pointermove', handlePointerMove);
+    window.removeEventListener('pointerup', handlePointerUpOrCancel);
+    window.removeEventListener('pointercancel', handlePointerUpOrCancel);
+     window.removeEventListener('lostpointercapture', handlePointerUpOrCancel);
 
 	if (renderer) {
 		renderer.dispose();
@@ -1933,8 +1953,6 @@ onDestroy(() => {
 			renderer.domElement.parentNode.removeChild(renderer.domElement);
 		}
 	}
-	
-	
 
 	// Dispose shared resources explicitly
 	ground?.geometry?.dispose();
@@ -1993,9 +2011,7 @@ onDestroy(() => {
 
 <div
     bind:this={container}
-    style="width: 100%; height: 100%;"
-    on:dragover|preventDefault
-    on:drop|preventDefault
+    style="width: 100%; height: 100%; touch-action: none;"
     role="application"
 >
     <!-- Three.js canvas will be appended here -->
@@ -2007,5 +2023,6 @@ div {
   width: 100%;
   height: 100%; /* Make div fill container */
   overflow: hidden; /* Prevent scrollbars if canvas slightly overflows */
+  cursor: default;
 }
 </style>
