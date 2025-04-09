@@ -811,8 +811,9 @@ function removeGridObjectAt(row: number, col: number) {
     const objectType = 'plantTypeId' in gridObjectInfo ? 'plant' : 'decor';
     const typeId = objectType === 'plant' ? (gridObjectInfo as PlantInfo).plantTypeId : (gridObjectInfo as DecorInfo).decorTypeId;
     const instanceIdToRemove = gridObjectInfo.instanceId;
+    const objectToRemove = gridObjectInfo; // Keep a reference
 
-    console.log(`Removing ${objectType} ${typeId} at [${gridObjectInfo.gridPos.row}, ${gridObjectInfo.gridPos.col}], instanceId ${instanceIdToRemove}`);
+    console.log(`Removing ${objectType} ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}], instanceId ${instanceIdToRemove}`);
 
     // --- 1. Find InstancedMesh & Instance Map ---
     const instancedMesh = instancedMeshes[typeId];
@@ -828,18 +829,19 @@ function removeGridObjectAt(row: number, col: number) {
          return;
     }
 
-
     // --- 2. Get Last Instance Info ---
     const lastInstanceId = instancedMesh.count - 1;
-    const lastInstanceInfo = instanceMap.get(lastInstanceId);
-
+    const lastInstanceInfo = instanceMap.get(lastInstanceId); // Can be undefined if count is 0 or map inconsistent
 
     // --- 3. Perform Swap (if necessary) ---
+    let swapOccurred = false;
     if (instanceIdToRemove !== lastInstanceId && lastInstanceInfo) {
+        swapOccurred = true;
         console.log(`   Swapping instance ${instanceIdToRemove} with last instance ${lastInstanceId}`);
         // Copy Matrix from last instance to removed instance's slot
         instancedMesh.getMatrixAt(lastInstanceId, tempMatrix);
         instancedMesh.setMatrixAt(instanceIdToRemove, tempMatrix);
+        instancedMesh.instanceMatrix.needsUpdate = true;
 
         // Copy Color from last instance to removed instance's slot (if applicable)
         if (instancedMesh.instanceColor) {
@@ -852,57 +854,69 @@ function removeGridObjectAt(row: number, col: number) {
         lastInstanceInfo.instanceId = instanceIdToRemove;
 
         // Update the map: map the *new* ID (instanceIdToRemove) to the *last* info object
-        instanceMap.set(instanceIdToRemove, lastInstanceInfo);
-
-        instancedMesh.instanceMatrix.needsUpdate = true;
+        // This must happen AFTER deleting the old entries
+        // instanceMap.set(instanceIdToRemove, lastInstanceInfo); // Moved down
 
     } else {
          console.log(`   Removing the last instance (${instanceIdToRemove}), no swap needed.`);
          // Optional: Could explicitly zero out matrix/color for the removed slot, but reducing count is key.
-         // instancedMesh.setMatrixAt(instanceIdToRemove, new THREE.Matrix4().identity()); // Example: reset matrix
     }
 
-    // --- 4. Clean Up Original Object ---
+    // --- 4. Update Instance Map (CRITICAL ORDER) ---
+    // Always remove the entry for the object we originally intended to delete
+    const deletedFromMap = instanceMap.delete(instanceIdToRemove);
+    // console.log(`   Map delete for original object ID ${instanceIdToRemove}: ${deletedFromMap}`);
+
+    if (swapOccurred && lastInstanceInfo) {
+        // If we swapped, also remove the map entry for the *last object's original ID*
+        const deletedLastFromMap = instanceMap.delete(lastInstanceId);
+        // console.log(`   Map delete for swapped object's OLD ID ${lastInstanceId}: ${deletedLastFromMap}`);
+
+        // NOW, add the new entry mapping the freed slot ID to the object that was moved.
+        instanceMap.set(instanceIdToRemove, lastInstanceInfo);
+        // console.log(`   Map set for swapped object's NEW ID ${instanceIdToRemove}`);
+    }
+     // console.log(`   Instance map after updates for mesh ${instancedMesh.uuid.substring(0,4)}...:`, new Map(instanceMap)); // Log map state
+
+
+    // --- 5. Clean Up Original Object's Data ---
     // Remove original object from main sets
     if (objectType === 'plant') {
-        allPlants.delete(gridObjectInfo as PlantInfo);
-        updatablePlants.delete(gridObjectInfo as PlantInfo); // Remove from updates if it was there
+        allPlants.delete(objectToRemove as PlantInfo);
+        updatablePlants.delete(objectToRemove as PlantInfo); // Remove from updates if it was there
     } else {
-        allDecor.delete(gridObjectInfo as DecorInfo);
+        allDecor.delete(objectToRemove as DecorInfo);
     }
-    // Remove original object from the instance map using its *original* ID
-    instanceMap.delete(gridObjectInfo.instanceId); // Remove the entry for the object we intended to delete
-
-    // If we swapped, we also need to remove the map entry for the *last* ID, since we moved its object
-    if (instanceIdToRemove !== lastInstanceId) {
-         instanceMap.delete(lastInstanceId);
-    }
-
-    // Important: Nullify the instanceId on the object being removed (even though it's leaving sets)
-    // This prevents potential issues if a reference somehow lingers.
-    gridObjectInfo.instanceId = null;
+    // Important: Nullify the instanceId on the object being removed
+    objectToRemove.instanceId = null;
 
 
-    // --- 5. Decrement Count & Clear Grid ---
-    instancedMesh.count--;
+    // --- 6. Decrement Count & Clear Grid ---
+    instancedMesh.count--; // This makes the visual change effective
     console.log(`   Mesh ${instancedMesh.uuid.substring(0, 4)}... count is now ${instancedMesh.count}`);
 
     // Clear Grid Data (as before)
-    const { size, gridPos } = gridObjectInfo;
+    const { size, gridPos } = objectToRemove;
     for (let rOffset = 0; rOffset < size.rows; rOffset++) {
 		for (let cOffset = 0; cOffset < size.cols; cOffset++) {
 			const targetRow = gridPos.row + rOffset;
 			const targetCol = gridPos.col + cOffset;
 			if (targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
-				gardenGrid[targetRow][targetCol] = null;
+				// Double check we are clearing the right thing, especially if a pointer exists
+                const cell = gardenGrid[targetRow]?.[targetCol];
+                if (cell === objectToRemove || (cell && 'pointerTo' in cell && cell.pointerTo.row === gridPos.row && cell.pointerTo.col === gridPos.col)) {
+                    gardenGrid[targetRow][targetCol] = null;
+                } else if(cell !== null){
+                    // This might happen if grid somehow became inconsistent, log a warning
+                     console.warn(`   Grid cell [${targetRow}, ${targetCol}] did not contain the expected object or pointer during removal cleanup. Cell content:`, cell);
+                }
             } else {
                 console.warn(`   Attempted to clear grid cell out of bounds: [${targetRow}, ${targetCol}]`);
             }
         }
 	}
 
-
-    // --- 6. Save and Render ---
+    // --- 7. Save and Render ---
     debouncedSaveGardenState();
     if (!isRenderLoopActive) {
         requestRender();
