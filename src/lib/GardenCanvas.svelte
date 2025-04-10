@@ -1721,8 +1721,11 @@ onMount(() => {
         if (typeId === 'default') continue; // Skip default if not a placeable type
 
         const config = plantConfigs[typeId];
-        // Use the placeholder geometry for now, could be type-specific later
-        const geometry = placeholderGeometry;
+
+        // Give each InstancedMesh its own unique geometry instance
+        // so instance attributes don't conflict.
+        const geometry = placeholderGeometry.clone();
+
         // Create a base material that ACCEPTS vertex/instance colors
         const baseMaterial = new THREE.MeshStandardMaterial({
             color: 0xffffff, // Start with white, will be modulated by instance color
@@ -1959,7 +1962,7 @@ onDestroy(() => {
 	window.removeEventListener('pointermove', handlePointerMove);
     window.removeEventListener('pointerup', handlePointerUpOrCancel);
     window.removeEventListener('pointercancel', handlePointerUpOrCancel);
-     window.removeEventListener('lostpointercapture', handlePointerUpOrCancel);
+    window.removeEventListener('lostpointercapture', handlePointerUpOrCancel);
 
 	if (renderer) {
 		renderer.dispose();
@@ -1991,19 +1994,20 @@ onDestroy(() => {
     for (const typeId in instancedMeshes) {
         const mesh = instancedMeshes[typeId];
         if (mesh) {
-             // Geometry is shared (placeholderGeometry), dispose ONCE above.
-             // DO NOT dispose mesh.geometry here if shared.
-             // If each InstancedMesh had UNIQUE geometry, dispose it here:
-             // mesh.geometry.dispose();
+            // Dispose the cloned geometry used by this InstancedMesh
+            if (mesh.geometry) {
+                mesh.geometry.dispose();
+                console.log(`Disposed cloned geometry for InstancedMesh: ${typeId}`);
+            }
 
-             // Dispose the material used by this InstancedMesh
-             if (Array.isArray(mesh.material)) {
-                 mesh.material.forEach(m => m.dispose());
-             } else if (mesh.material) {
-                 mesh.material.dispose();
-             }
-             console.log(`Disposed material for InstancedMesh: ${typeId}`);
-             // No need to explicitly remove from scene if renderer/scene is disposed
+            // Dispose the material used by this InstancedMesh
+            if (Array.isArray(mesh.material)) {
+                mesh.material.forEach(m => m.dispose());
+            } else if (mesh.material) {
+                mesh.material.dispose();
+            }
+            console.log(`Disposed material for InstancedMesh: ${typeId}`);
+            // No need to explicitly remove from scene if renderer/scene is disposed
         }
     }
 	
