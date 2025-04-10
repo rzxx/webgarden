@@ -5,62 +5,66 @@ import { MathUtils } from 'three'; // For mapLinear and lerp
 import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo } from './stores';
 import { get } from 'svelte/store';
 import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // Import SkeletonUtils for cloning
 
 // --- Plant Configuration ---
 interface PlantConfig {
 	growthRatePerSecond: number;
-	initialScale: number;
-	maxScale: number;
+	initialScale: number; // Scale factor relative to normalized size
+	maxScale: number; // Scale factor relative to normalized size
 	thirstThresholdSeconds: number;
-	size: { rows: number; cols: number }; // Default size for this plant type
+	size: { rows: number; cols: number };
     modelPath: string;
-	// Add other type-specific things later (e.g., model path)
+    // Optional: Define a base color for tinting if the model is designed for it
+    healthyColorTint?: THREE.Color;
+    thirstyColorTint?: THREE.Color;
 }
 
 const plantConfigs: Record<string, PlantConfig> = {
-	fern: { growthRatePerSecond: 1 / (60 * 1), initialScale: 0.3, maxScale: 1.0, thirstThresholdSeconds: 60 * 1, size: { rows: 1, cols: 1 }, modelPath: '/models/fern.glb' }, // 1x1
-	cactus: { growthRatePerSecond: 1 / (60 * 5), initialScale: 0.2, maxScale: 0.8, thirstThresholdSeconds: 60 * 10, size: { rows: 1, cols: 1 }, modelPath: '/models/cactus.glb' }, // 1x1
-	// Example of a larger plant:
-	bush: { growthRatePerSecond: 1 / (60 * 3), initialScale: 0.1, maxScale: 2, thirstThresholdSeconds: 60 * 8, size: { rows: 2, cols: 2 }, modelPath: '/models/bush.glb' }, // 2x2
-	default: { growthRatePerSecond: 1 / (60 * 2), initialScale: 0.4, maxScale: 1.0, thirstThresholdSeconds: 60 * 5, size: { rows: 1, cols: 1 }, modelPath: '' } // Default 1x1
+	fern: { growthRatePerSecond: 1 / (60 * 1), initialScale: 0.3, maxScale: 1.0, thirstThresholdSeconds: 60 * 1, size: { rows: 1, cols: 1 }, modelPath: '/models/fern.glb', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) },
+	cactus: { growthRatePerSecond: 1 / (60 * 5), initialScale: 0.2, maxScale: 0.8, thirstThresholdSeconds: 60 * 10, size: { rows: 1, cols: 1 }, modelPath: '/models/cactus.glb', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) },
+	bush: { growthRatePerSecond: 1 / (60 * 3), initialScale: 0.1, maxScale: 2.0, thirstThresholdSeconds: 60 * 8, size: { rows: 2, cols: 2 }, modelPath: '/models/bush.glb', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) },
+	default: { growthRatePerSecond: 1 / (60 * 2), initialScale: 0.4, maxScale: 1.0, thirstThresholdSeconds: 60 * 5, size: { rows: 1, cols: 1 }, modelPath: '', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) }
 };
 // --- End Plant Configuration ---
 
 // --- Decor Configuration ---
 interface DecorConfig {
     size: { rows: number; cols: number };
-    modelPath?: string;
-    defaultRotationY?: number; // Default orientation in radians
+    modelPath: string; // Make modelPath required for decor too
+    defaultRotationY?: number;
+    // Optional: Base scale if different from normalized 1x1 cell size
+    baseScale?: number;
 }
 
 const decorConfigs: Record<string, DecorConfig> = {
-    box: { size: { rows: 1, cols: 1 }, modelPath: '/models/box.glb', defaultRotationY: 0 },
-	boxBig: { size: { rows: 2, cols: 2 }, modelPath: '/models/box_big.glb', defaultRotationY: 0 },
+    box: { size: { rows: 1, cols: 1 }, modelPath: '/models/box.glb', defaultRotationY: 0, baseScale: 1.0 },
+	boxBig: { size: { rows: 2, cols: 2 }, modelPath: '/models/box_big.glb', defaultRotationY: 0, baseScale: 1.0 }, // Base scale refers to the size *within* its 2x2 area
 };
 // --- End Decor Configuration ---
 
-// --- Decor Instance Data Type ---
+// --- Decor Instance Data Type (Updated) ---
 interface DecorInfo {
-    decorTypeId: string; // 'fence_post', 'wooden_box', etc.
+    decorTypeId: string;
     size: { rows: number; cols: number };
-    instanceId: number | null;
-    gridPos: { row: number; col: number }; // Top-left grid position
-    rotationY: number; // Instance-specific rotation
+    gridPos: { row: number; col: number };
+    rotationY: number;
+    object3D: THREE.Group | null; // Reference to the actual Three.js object
 }
 // --- End Decor Instance Data ---
 
-// --- Grid Cell Data Type ---
+// --- Grid Cell Data Type (Updated) ---
 interface PlantInfo {
 	plantTypeId: string;
 	state: 'healthy' | 'needs_water';
-	growthProgress: number;
+	growthProgress: number; // 0.0 to 1.0
 	lastUpdateTime: number;
 	lastWateredTime: number;
-	size: { rows: number; cols: number }; // Size in grid cells
-	instanceId: number | null;
-	// Store the top-left corner for easy reference, even though it's also the grid index
-	// This can be useful if you pass PlantInfo around without grid context.
+	size: { rows: number; cols: number };
 	gridPos: { row: number; col: number };
+    object3D: THREE.Group | null; // Reference to the actual Three.js object
+    // Store original material colors for reverting tints
+    originalMaterialColors?: Map<THREE.Material, THREE.Color>;
 }
 
 // Grid cell can be: empty, the main plant info, or a pointer to the main info
@@ -81,15 +85,19 @@ const HALF_PLANE_SIZE = PLANE_SIZE / 2;
 
 const gardenVisibleSize = 30;
 
-// --- Types ---
+// --- NEW: Define placeholder materials (if models aren't found) ---
+const placeholderMaterial = new THREE.MeshStandardMaterial({ color: 0x800080 }); // Purple
+const placeholderGeometry = new THREE.BoxGeometry(CELL_SIZE * 0.5, CELL_SIZE * 0.5, CELL_SIZE * 0.5);
+// --- End Placeholder ---
+
+// --- Types for Saving ---
 interface SerializableDecorInfo {
     decorTypeId: string;
     size: { rows: number; cols: number };
     rotationY: number;
-    // Add 'type' field for easier loading differentiation
     type: 'decor';
+    // object3D is NOT saved
 }
-
 interface SerializablePlantInfo {
 	plantTypeId: string;
 	state: 'healthy' | 'needs_water';
@@ -97,30 +105,27 @@ interface SerializablePlantInfo {
 	lastUpdateTime: number;
 	lastWateredTime: number;
 	size: { rows: number; cols: number };
-	type: 'plant'; // Explicit type marker
-	// We don't save gridPos directly, it's derived from the save structure
+	type: 'plant';
+    // object3D is NOT saved
+    // originalMaterialColors is NOT saved
 }
 type SerializableGridCell = SerializablePlantInfo | SerializableDecorInfo | null;
 type SerializableGardenGrid = SerializableGridCell[][];
 // --- End Types ---
 
-// --- Asset Loading ---
+// --- Asset Loading (Cache structure simplified slightly) ---
 const loadingManager = new THREE.LoadingManager();
 const gltfLoader = new GLTFLoader(loadingManager);
 
-// Cache for loaded GLTF scenes/models and derived data
 interface CachedGltfData {
-    scene: THREE.Group; // The full loaded scene
-    geometry: THREE.BufferGeometry | null; // Extracted geometry for instancing
-    material: THREE.Material | THREE.Material[] | null; // Extracted material(s)
-    baseScale: number; // Scale factor to normalize model size
+    scene: THREE.Group; // The *original* loaded scene (to be cloned)
+    baseScale: number; // Scale factor to normalize model size to roughly 1 cell unit (or specified base size)
     centerOffsetY: number; // Offset to place model base at y=0
 }
 const gltfCache: Record<string, CachedGltfData> = {};
-let assetsLoaded = false; // Flag to track loading status
-let assetsLoadingPromise: Promise<void> | null = null; // To track the loading process
+let assetsLoaded = false;
+let assetsLoadingPromise: Promise<void> | null = null;
 // --- End Asset Loading ---
-
 
 // --- Grid Objects tracking ---
 // Set to hold only PlantInfo objects that currently require
@@ -132,14 +137,15 @@ let allPlants: Set<PlantInfo> = new Set();
 let allDecor: Set<DecorInfo> = new Set();
 // --- Grid Objects tracking ---
 
-/// --- Bounding Boxes ---
-let previewGroup: THREE.Group | null = null; // Group to hold preview plane meshes
-let previewMeshes: THREE.Mesh[] = []; // Array to hold reusable preview plane meshes
-const MAX_PREVIEW_CELLS = 16; // Max anticipated size (e.g., 4x4), adjust if needed
-
-// Materials for the preview
+//// --- Bounding Boxes / Preview (Keep mostly as is) ---
+let previewGroup: THREE.Group | null = null;
+let previewMeshes: THREE.Mesh[] = [];
+const MAX_PREVIEW_CELLS = 16;
 let validPlacementMaterial: THREE.MeshBasicMaterial;
 let invalidPlacementMaterial: THREE.MeshBasicMaterial;
+let lastPreviewGridPos: { row: number; col: number } | null = null;
+const THROTTLE_DRAGOVER_MS = 75;
+// --- End Bounding Boxes ---
 
 // --- Placeholder Object Geometry/Materials ---
 const healthyMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
@@ -148,27 +154,25 @@ const healthyColor = new THREE.Color(healthyMaterial.color); // Get base colors
 const thirstyColor = new THREE.Color(thirstyMaterial.color);
 // --- End Placeholder Materials ---
 
-// To optimize updates, track the last grid cell the preview was drawn at
-let lastPreviewGridPos: { row: number; col: number } | null = null;
-const THROTTLE_DRAGOVER_MS = 75;
-
-// --- NEW: State variables to track pointer drag ---
+// --- State variables to track pointer drag ---
 let currentHeldItem: HeldItemInfo | null = null;
 let isPointerDragging = false; // Local state reflecting the store
 /// --- End Bounding Boxes ---
 
-// --- Instancing (Setup moved to after asset loading) ---
-const MAX_INSTANCES_PER_TYPE = 1024;
-let instancedMeshes: Record<string, THREE.InstancedMesh> = {};
-let instanceIdToDataMap: Map<string, Map<number, PlantInfo | DecorInfo>> = new Map();
-const tempMatrix = new THREE.Matrix4();
-const tempObject = new THREE.Object3D();
-const tempColor = new THREE.Color();
-// Base scale factors for models (calculated after loading)
-const modelBaseScales: Record<string, number> = {};
-const modelYOffsets: Record<string, number> = {};
-// --- End Instancing ---
+// --- Reusable objects for updates ---
+const tempVector3 = new THREE.Vector3();
+const tempQuaternion = new THREE.Quaternion();
+const tempScaleVector = new THREE.Vector3();
+const tempColor = new THREE.Color(); // Keep for color manipulation
 
+interface CachedGltfData {
+    scene: THREE.Group; // The *original* loaded scene (to be cloned)
+    baseScale: number; // Scale factor to normalize model size
+    // Offsets needed to move the bounding box center to (0, y, 0) *before* scaling
+    centerOffsetX: number;
+    centerOffsetY: number;
+    centerOffsetZ: number;
+}
 
 // --- Day/Night Cycle Configuration ---
 // 1. Define Key Time Hours (0-23.99)
@@ -211,7 +215,7 @@ const SUN_DISTANCE = 40;
 const MAX_DIRECTIONAL_INTENSITY = 1.2;
 const MIN_DIRECTIONAL_INTENSITY = 0.1;
 const MAX_AMBIENT_INTENSITY = 0.6;
-const MIN_AMBIENT_INTENSITY = 0.1;
+const MIN_AMBIENT_INTENSITY = 100;
 const MAX_HEMISPHERE_INTENSITY = 0.8;
 const MIN_HEMISPHERE_INTENSITY = 0.1;
 
@@ -344,56 +348,62 @@ function calculateSegmentProgress(cycleProgress: number, startPoint: number, end
     return Math.max(0, Math.min(1, progressInSegment / segmentDuration));
 }
 
-// --- Helper: Extract Geometry/Material and Calculate Scale from GLTF ---
+// --- Helper: Extract Geometry/Material and Calculate Scale from GLTF (Improved Centering) ---
 function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = CELL_SIZE): CachedGltfData | null {
-    let geometry: THREE.BufferGeometry | null = null;
-    let material: THREE.Material | THREE.Material[] | null = null;
     let baseScale = 1.0;
+    let centerOffsetX = 0;
     let centerOffsetY = 0;
+    let centerOffsetZ = 0;
 
+    // --- Calculate Bounding Box for the entire scene ---
+    const box = new THREE.Box3();
+    box.setFromObject(gltfScene, true); // true = precisely check descendants
+
+    const size = new THREE.Vector3();
+    box.getSize(size);
+
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+
+    if (size.x === 0 && size.y === 0 && size.z === 0) {
+        console.warn("GLTF scene bounding box is zero. Using default scale/offset.", gltfScene);
+        // Keep default scale/offsets
+    } else {
+        // Use max dimension for normalization scale
+        const maxDim = Math.max(size.x, size.y, size.z);
+
+        if (maxDim > 0) {
+            baseScale = targetSize / maxDim;
+        } else {
+            baseScale = 1.0; // Avoid division by zero
+        }
+
+        // Calculate offsets needed to move the *center* of the bounding box
+        // to (0, min.y, 0) *before* scaling.
+        // Offset Y aims to place the bottom of the box at y=0 after scaling.
+        centerOffsetY = -box.min.y; // Offset needed before scaling
+        // Offset X/Z aims to place the center of the box at x=0, z=0 before scaling.
+        centerOffsetX = -center.x;
+        centerOffsetZ = -center.z;
+
+        console.log(`GLTF Prep: Path=${gltfScene.userData.path || 'N/A'}`); // Add path if you store it
+        console.log(`  Orig Size=(${size.x.toFixed(2)}, ${size.y.toFixed(2)}, ${size.z.toFixed(2)})`);
+        console.log(`  Orig BoxMin=(${box.min.x.toFixed(2)}, ${box.min.y.toFixed(2)}, ${box.min.z.toFixed(2)})`);
+        console.log(`  Orig BoxCenter=(${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
+        console.log(`  MaxDim=${maxDim.toFixed(2)}, BaseScale=${baseScale.toFixed(2)}`);
+        console.log(`  Pre-Scale Offsets: dX=${centerOffsetX.toFixed(2)}, dY=${centerOffsetY.toFixed(2)}, dZ=${centerOffsetZ.toFixed(2)}`);
+    }
+     // --- End Bounding Box Calculation ---
+
+    // Ensure shadows are enabled on descendants
     gltfScene.traverse((child) => {
-        // Find the first Mesh with geometry and material
-        if (!geometry && child instanceof THREE.Mesh && child.geometry && child.material) {
-            geometry = child.geometry.clone(); // Clone to avoid modifying original
-            material = child.material; // Use the original material reference initially
-            if (Array.isArray(material)) {
-                console.warn("GLTF Mesh has multiple materials. Instancing might look incorrect. Using first material only for base.");
-                material = material[0]; // Simplification: Use only the first material for instancing base
-            }
-            // Ensure material can be tinted if needed (optional, might override model colors)
-            // if (material instanceof THREE.MeshStandardMaterial) {
-            //     material.vertexColors = true; // Force enable vertex colors if we plan to use the color attribute
-            // }
-
-            // --- Calculate Bounding Box and Scaling ---
-            if (geometry && !geometry.boundingBox) {
-                geometry.computeBoundingBox();
-            }
-            if (geometry && geometry.boundingBox) {
-                const size = new THREE.Vector3();
-                geometry.boundingBox.getSize(size);
-                const maxDim = Math.max(size.x, size.y, size.z); // Find the largest dimension
-
-                if (maxDim > 0) {
-                    baseScale = targetSize / maxDim; // Scale factor to make largest dimension = targetSize (e.g., CELL_SIZE)
-                }
-
-                // Calculate offset to place bottom of bounding box at y=0
-                centerOffsetY = -geometry.boundingBox.min.y * baseScale;
-
-                console.log(`GLTF Prep: Size=(${size.x.toFixed(2)}, ${size.y.toFixed(2)}, ${size.z.toFixed(2)}), MaxDim=${maxDim.toFixed(2)}, BaseScale=${baseScale.toFixed(2)}, OffsetY=${centerOffsetY.toFixed(2)}`);
-            } else {
-                console.warn("Could not compute bounding box for GLTF geometry.");
-            }
+        if (child instanceof THREE.Mesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
         }
     });
 
-    if (!geometry || !material) {
-        console.error("Could not find suitable Mesh in GLTF scene:", gltfScene);
-        return null;
-    }
-
-    return { scene: gltfScene, geometry, material, baseScale, centerOffsetY };
+    return { scene: gltfScene, baseScale, centerOffsetX, centerOffsetY, centerOffsetZ };
 }
 // --- End Helper ---
 
@@ -453,59 +463,71 @@ function initializeGrid() {
 	console.log("Initialized Grid:", gardenGrid);
 }
 
-// --- Function to Update Plant Visuals (MODIFIED for GLTF) ---
+/// --- Function to Update Plant Visuals (REWRITTEN for individual objects) ---
 /**
- * Updates the Matrix and potentially Color for a specific plant instance.
+ * Updates the Transform and Material properties for a specific plant's Object3D.
  */
  function updatePlantVisuals(plantInfo: PlantInfo) {
-	if (plantInfo.instanceId === null) return;
-
-	const instancedMesh = instancedMeshes[plantInfo.plantTypeId];
-    const cachedGltf = gltfCache[plantConfigs[plantInfo.plantTypeId]?.modelPath]; // Get cached data
-
-	if (!instancedMesh || !cachedGltf) {
-		console.error(`InstancedMesh or Cached GLTF not found for plant type: ${plantInfo.plantTypeId}`);
+	if (!plantInfo.object3D) {
+		console.warn(`Cannot update visuals for plant at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]: Missing object3D`);
 		return;
 	}
 
 	const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+    const cachedGltfData = gltfCache[config.modelPath]; // Get cached data including offsets
 
-	// --- 1. Calculate Transformation Matrix ---
-    // Interpolate scale based on growthProgress (using config's scale targets)
-	const growthScaleFactor = MathUtils.lerp(config.initialScale, config.maxScale, plantInfo.growthProgress);
-    // Combine base scale (to normalize size) and growth scale
-    const finalScale = cachedGltf.baseScale * growthScaleFactor;
-
-	const worldPos = gridAreaCenterToWorld(plantInfo.gridPos.row, plantInfo.gridPos.col, plantInfo.size.rows, plantInfo.size.cols);
-    // Adjust Y position based on the model's calculated offset and final scale
-    const worldY = cachedGltf.centerOffsetY * growthScaleFactor;
-
-	tempObject.position.set(worldPos.x, worldY, worldPos.z);
-	tempObject.scale.set(finalScale, finalScale, finalScale);
-	tempObject.rotation.set(0, 0, 0); // Reset rotation (add plant-specific rotation later if needed)
-	tempObject.updateMatrix();
-
-	instancedMesh.setMatrixAt(plantInfo.instanceId, tempObject.matrix);
-	instancedMesh.instanceMatrix.needsUpdate = true;
-
-	// --- 2. Update Instance Color (Tinting) ---
-	if (instancedMesh.instanceColor) {
-		const targetColor = plantInfo.state === 'needs_water' ? thirstyColor : healthyColor;
-        // Optimization: Check if color changed (optional)
-		tempColor.fromArray(instancedMesh.instanceColor.array, plantInfo.instanceId * 3);
-		if (!tempColor.equals(targetColor)) {
-			instancedMesh.instanceColor.setXYZ(plantInfo.instanceId, targetColor.r, targetColor.g, targetColor.b);
-			instancedMesh.instanceColor.needsUpdate = true;
-		}
-	} else {
-        // If the material doesn't support instanceColor, this won't do anything.
-        // Consider swapping materials or using uniforms for more complex visual state changes.
+    if (!cachedGltfData) {
+        console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Missing cached GLTF data.`);
+        return;
     }
-     // --- TODO: Future Growth Stage Model Swapping ---
-    // Here, you would check plantInfo.growthProgress and potentially:
-    // 1. Get the InstancedMesh corresponding to the *correct* growth stage model.
-    // 2. Update the matrix/color on *that* mesh instead of a single mesh.
-    // This requires having multiple InstancedMesh objects per plant type.
+
+	// --- 1. Calculate Transformation ---
+	const growthScaleFactor = MathUtils.lerp(config.initialScale, config.maxScale, plantInfo.growthProgress);
+    const finalScale = cachedGltfData.baseScale * growthScaleFactor; // Base scale * growth
+
+	const worldPosCenter = gridAreaCenterToWorld(plantInfo.gridPos.row, plantInfo.gridPos.col, plantInfo.size.rows, plantInfo.size.cols);
+
+    // Apply the pre-calculated offsets, scaled appropriately by the *current* finalScale
+    const offsetX = cachedGltfData.centerOffsetX * finalScale;
+    const offsetY = cachedGltfData.centerOffsetY * finalScale;
+    const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
+
+	plantInfo.object3D.position.set(
+        worldPosCenter.x + offsetX,
+        worldPosCenter.y + offsetY,
+        worldPosCenter.z + offsetZ
+    );
+	plantInfo.object3D.scale.set(finalScale, finalScale, finalScale);
+	// plantInfo.object3D.rotation.set(0, 0, 0); // Keep existing rotation
+
+	// --- 2. Update Material Color (Tinting - logic remains the same) ---
+    const targetColor = plantInfo.state === 'needs_water'
+        ? (config.thirstyColorTint ?? new THREE.Color(0xaaaaaa))
+        : (config.healthyColorTint ?? new THREE.Color(0xffffff));
+
+    if (!plantInfo.originalMaterialColors) {
+        console.warn(`Plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] missing originalMaterialColors map for tinting.`);
+    }
+
+    plantInfo.object3D.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.material) {
+            const materials = Array.isArray(child.material) ? child.material : [child.material];
+            materials.forEach((mat) => {
+                 // Check if it's one of the materials we cloned and stored
+                if (plantInfo.originalMaterialColors?.has(mat) && (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
+                    const originalColor = plantInfo.originalMaterialColors.get(mat)!; // We know it exists
+                    tempColor.copy(originalColor).multiply(targetColor);
+                    mat.color.copy(tempColor);
+                } else if (!plantInfo.originalMaterialColors?.has(mat) && (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
+                     // Fallback: If somehow the material wasn't in the map (e.g. loaded save state from older version?)
+                     // try tinting based on current color, but this drifts.
+                     console.warn(`Material not found in originalMaterialColors map for plant ${plantInfo.plantTypeId}. Tinting may be inaccurate.`);
+                     tempColor.copy(mat.color).multiplyScalar(0.8).lerp(targetColor, 0.5); // Basic fallback tint
+                     mat.color.copy(tempColor);
+                }
+            });
+        }
+    });
 }
 // --- End Function to Update Plant Visuals ---
 
@@ -859,123 +881,62 @@ function updatePlantGrowth(plantInfo: PlantInfo): boolean {
 	return needsVisualUpdate;
 }
 
-// --- Function to Remove Grid Object (Replaces removePlantAt) ---
+// --- Function to Remove Grid Object (REWRITTEN) ---
 function removeGridObjectAt(row: number, col: number) {
     const gridObjectInfo = getGridObjectInfoAt(row, col); // Get the main info object
 
-    if (!gridObjectInfo || gridObjectInfo.instanceId === null) {
-        console.log(`No valid object with instanceId found at or pointed to by [${row}, ${col}] to remove.`);
+    if (!gridObjectInfo) {
+        console.log(`No object found at or pointed to by [${row}, ${col}] to remove.`);
         return;
     }
 
     const objectType = 'plantTypeId' in gridObjectInfo ? 'plant' : 'decor';
     const typeId = objectType === 'plant' ? (gridObjectInfo as PlantInfo).plantTypeId : (gridObjectInfo as DecorInfo).decorTypeId;
-    const instanceIdToRemove = gridObjectInfo.instanceId;
     const objectToRemove = gridObjectInfo; // Keep a reference
 
-    console.log(`Removing ${objectType} ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}], instanceId ${instanceIdToRemove}`);
+    console.log(`Removing ${objectType} ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}]`);
 
-    // --- 1. Find InstancedMesh & Instance Map ---
-    const instancedMesh = instancedMeshes[typeId];
-    if (!instancedMesh) {
-        console.error(`Removal Error: InstancedMesh not found for type ${typeId}. Cannot remove.`);
-        // Clear Grid Data as fallback
-        const { size, gridPos } = objectToRemove;
-        for (let rOffset = 0; rOffset < size.rows; rOffset++) {
-            for (let cOffset = 0; cOffset < size.cols; cOffset++) {
-                const targetRow = gridPos.row + rOffset;
-                const targetCol = gridPos.col + cOffset;
-                if (targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
-                    // Double check we are clearing the right thing, especially if a pointer exists
-                    const cell = gardenGrid[targetRow]?.[targetCol];
-                    if (cell === objectToRemove || (cell && 'pointerTo' in cell && cell.pointerTo.row === gridPos.row && cell.pointerTo.col === gridPos.col)) {
-                        gardenGrid[targetRow][targetCol] = null;
-                    } else if(cell !== null){
-                        // This might happen if grid somehow became inconsistent, log a warning
-                        console.warn(`   Grid cell [${targetRow}, ${targetCol}] did not contain the expected object or pointer during removal cleanup. Cell content:`, cell);
-                    }
-                } else {
-                    console.warn(`   Attempted to clear grid cell out of bounds: [${targetRow}, ${targetCol}]`);
+    // --- 1. Remove Object3D from Scene and Dispose ---
+    if (objectToRemove.object3D) {
+        scene.remove(objectToRemove.object3D);
+
+        // Dispose geometry and materials
+        objectToRemove.object3D.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+                child.geometry?.dispose();
+                console.log(`   Disposed geometry for ${typeId}`);
+                if (child.material) {
+                    const materials = Array.isArray(child.material) ? child.material : [child.material];
+                    materials.forEach(mat => {
+                        // Dispose textures attached to the material
+                        Object.keys(mat).forEach(key => {
+                            const value = mat[key as keyof THREE.Material];
+                            if (value instanceof THREE.Texture) {
+                                value.dispose();
+                                console.log(`   Disposed texture for ${typeId}`);
+                            }
+                        });
+                        mat.dispose(); // Dispose the material itself
+                        console.log(`   Disposed material for ${typeId}`);
+                    });
                 }
             }
-        }
-        // Remove from sets
-        if (objectType === 'plant') {
-            allPlants.delete(objectToRemove as PlantInfo);
-            updatablePlants.delete(objectToRemove as PlantInfo);
-        } else {
-            allDecor.delete(objectToRemove as DecorInfo);
-        }
-        debouncedSaveGardenState(); // Save the grid clearing
-        return; // Exit function
-    }
-
-    const instanceMap = instanceIdToDataMap.get(instancedMesh.uuid);
-    if (!instanceMap) {
-        console.error(`Removal Error: Instance Map not found for mesh UUID ${instancedMesh.uuid}`);
-        return; // Should not happen if mesh exists
-    }
-
-    // --- Sanity Check ---
-    if (instanceIdToRemove >= instancedMesh.count) {
-         console.error(`Removal Error: instanceId ${instanceIdToRemove} is out of bounds for mesh count ${instancedMesh.count}`);
-         return;
-    }
-
-    // --- 2. Get Last Instance Info ---
-    const lastInstanceId = instancedMesh.count - 1;
-    const lastInstanceInfo = instanceMap.get(lastInstanceId); // Can be undefined if count is 0 or map inconsistent
-
-    // --- 3. Perform Swap (if necessary) ---
-    let swapOccurred = false;
-    if (instanceIdToRemove !== lastInstanceId && lastInstanceInfo) {
-        swapOccurred = true;
-        console.log(`   Swapping instance ${instanceIdToRemove} with last instance ${lastInstanceId}`);
-        // Copy Matrix from last instance to removed instance's slot
-        instancedMesh.getMatrixAt(lastInstanceId, tempMatrix);
-        instancedMesh.setMatrixAt(instanceIdToRemove, tempMatrix);
-        instancedMesh.instanceMatrix.needsUpdate = true;
-
-        // Copy Color from last instance to removed instance's slot (if applicable)
-        if (instancedMesh.instanceColor) {
-            tempColor.fromArray(instancedMesh.instanceColor.array, lastInstanceId * 3);
-            instancedMesh.instanceColor.setXYZ(instanceIdToRemove, tempColor.r, tempColor.g, tempColor.b);
-            instancedMesh.instanceColor.needsUpdate = true;
-        }
-
-        // Update the 'last' info object's instanceId to point to the freed slot
-        lastInstanceInfo.instanceId = instanceIdToRemove;
-
-        // Update the map: map the *new* ID (instanceIdToRemove) to the *last* info object
-        // This must happen AFTER deleting the old entries
-        // instanceMap.set(instanceIdToRemove, lastInstanceInfo); // Moved down
-
+        });
+        console.log(`   Removed and disposed object3D for ${typeId}`);
+        objectToRemove.object3D = null; // Clear the reference
     } else {
-         console.log(`   Removing the last instance (${instanceIdToRemove}), no swap needed.`);
-         // Optional: Could explicitly zero out matrix/color for the removed slot, but reducing count is key.
+        console.warn(`   Object ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}] had no object3D reference to remove/dispose.`);
     }
 
-    // --- 4. Update Instance Map (CRITICAL ORDER) ---
-    instanceMap.delete(instanceIdToRemove);
-    if (swapOccurred && lastInstanceInfo) {
-        instanceMap.delete(lastInstanceId); // Remove old mapping for the swapped item
-        instanceMap.set(instanceIdToRemove, lastInstanceInfo); // Add new mapping for the swapped item
-    }
-
-    // --- 5. Clean Up Original Object's Data ---
+    // --- 2. Remove from Tracking Sets ---
     if (objectType === 'plant') {
         allPlants.delete(objectToRemove as PlantInfo);
-        updatablePlants.delete(objectToRemove as PlantInfo);
+        updatablePlants.delete(objectToRemove as PlantInfo); // Also remove from growth updates
     } else {
         allDecor.delete(objectToRemove as DecorInfo);
     }
-    objectToRemove.instanceId = null;
 
-    // --- 6. Decrement Count & Clear Grid ---
-    instancedMesh.count--;
-    // console.log(`   Mesh ${instancedMesh.uuid.substring(0, 4)}... count is now ${instancedMesh.count}`);
-
-    // Clear Grid Data (as before)
+    // --- 3. Clear Grid Data ---
     const { size, gridPos } = objectToRemove;
     for (let rOffset = 0; rOffset < size.rows; rOffset++) {
 		for (let cOffset = 0; cOffset < size.cols; cOffset++) {
@@ -983,129 +944,104 @@ function removeGridObjectAt(row: number, col: number) {
 			const targetCol = gridPos.col + cOffset;
 			if (targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
                 const cell = gardenGrid[targetRow]?.[targetCol];
+                // Check if clearing the main object or a pointer to it
                 if (cell === objectToRemove || (cell && 'pointerTo' in cell && cell.pointerTo.row === gridPos.row && cell.pointerTo.col === gridPos.col)) {
                     gardenGrid[targetRow][targetCol] = null;
                 }
-                // else if(cell !== null){ console.warn(...); } // Keep warning
             }
-            // else { console.warn(...); } // Keep warning
         }
 	}
 
-    // --- 7. Save and Render ---
+    // --- 4. Save and Render ---
     debouncedSaveGardenState();
-    if (!isRenderLoopActive) {
-        requestRender();
-    }
+    requestRender(); // Request render to show removal
 }
+// --- End Function to Remove Grid Object ---
 
-// --- Function to Place Grid Object ---
-// typeId can be plantTypeId or decorTypeId
+/// --- Function to Place Grid Object (REWRITTEN) ---
 function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>) {
     // --- Asset Check ---
     if (!assetsLoaded) {
         console.warn(`Assets not loaded yet. Cannot place ${typeId}.`);
-        // TODO: Queue placement? Or just fail? For now, fail.
         return;
     }
 
-    const config = objectType === 'plant'
-        ? plantConfigs[typeId]
-        : decorConfigs[typeId];
-
+    const config = objectType === 'plant' ? plantConfigs[typeId] : decorConfigs[typeId];
     if (!config || !config.modelPath) {
         console.error(`No config or modelPath found for ${objectType} with id ${typeId}`);
         return;
     }
-    const cachedGltf = gltfCache[config.modelPath];
-    if (!cachedGltf || !cachedGltf.geometry || !cachedGltf.material) {
-        console.error(`Cached GLTF data missing or invalid for ${typeId} (${config.modelPath}). Cannot place.`);
+    const cachedGltfData = gltfCache[config.modelPath];
+    if (!cachedGltfData || !cachedGltfData.scene) {
+        console.error(`Cached GLTF scene missing for ${typeId} (${config.modelPath}). Cannot place.`);
+        // Optionally: Create a placeholder object
+        // const placeholder = new THREE.Mesh(placeholderGeometry, placeholderMaterial);
+        // ... add placeholder to scene and store ref ... but requires more logic
         return;
     }
 
     const objectSize = config.size;
 
-	// --- Free Space for Placement Check ---
+	// --- Check Free Space ---
     if (!isAreaFree(row, col, objectSize.rows, objectSize.cols)) {
         console.log(`Cannot place ${typeId} of size ${objectSize.rows}x${objectSize.cols} at [${row}, ${col}], area not free.`);
-		if (!isRenderLoopActive) {
-			// Request render to hide preview box
-			requestRender();
-		}
-        return;
-    }
-    // --- Free Space for Placement Check ---
-
-
-    // --- 1. Find Target InstancedMesh ---
-    const instancedMesh = instancedMeshes[typeId];
-    if (!instancedMesh) {
-        console.error(`Placement Error: InstancedMesh not found for type: ${typeId}`);
+		requestRender(); // Request render to hide preview box if it was shown
         return;
     }
 
-	// --- 2. Get Next Instance ID & Check Limit ---
-    const instanceId = instancedMesh.count; // Next available slot is the current count
-    if (instanceId >= MAX_INSTANCES_PER_TYPE) {
-        console.error(`Cannot place ${typeId}: Maximum instances (${MAX_INSTANCES_PER_TYPE}) reached for this type.`);
-        // TODO: Maybe provide user feedback here?
-        return;
-    }
+    // --- 1. Clone the GLTF Scene ---
+    // Use SkeletonUtils.clone for proper handling of skinned meshes (if any)
+    const clonedObject = SkeletonUtils.clone(cachedGltfData.scene);
+    clonedObject.visible = true; // Ensure clone is visible
 
-    // --- 3. Create PlantInfo / DecorInfo ---
+    // --- 2. Create PlantInfo / DecorInfo ---
     const now = Date.now();
     let newGridObject: PlantInfo | DecorInfo;
+    const originalMaterialColors = new Map<THREE.Material, THREE.Color>(); // For plant tinting backup
 
     if (objectType === 'plant') {
+        const plantConfig = config as PlantConfig;
         const newPlant: PlantInfo = {
             plantTypeId: typeId,
             state: 'healthy',
             growthProgress: 0.0,
             lastUpdateTime: now,
             lastWateredTime: now,
-            size: { /* from config */ ...objectSize },
+            size: { ...objectSize },
             gridPos: { row, col },
-            instanceId: instanceId,
-            // --- Apply Initial State (mainly for loading) ---
-            ...(initialState as Partial<PlantInfo>) // Spread overrides
+            object3D: clonedObject as THREE.Group, // Explicitly cast to THREE.Group
+            originalMaterialColors: originalMaterialColors,
+            ...(initialState as Partial<PlantInfo>) // Apply loaded state
         };
-        
-        // Recalculate lastUpdateTime based on loaded progress if needed (complex offline growth)
-        // Or ensure loaded data has correct lastUpdateTime/lastWateredTime
-        if (initialState && 'lastUpdateTime' in initialState && initialState.lastUpdateTime) {
-            newPlant.lastUpdateTime = initialState.lastUpdateTime;
-        }
-        if (initialState && 'lastWateredTime' in initialState && initialState.lastWateredTime) {
-            newPlant.lastWateredTime = initialState.lastWateredTime;
-        }
-
         newGridObject = newPlant;
         allPlants.add(newPlant);
-         // Check state AFTER applying initial state
         if (newPlant.state === 'healthy' && newPlant.growthProgress < 1.0) {
              updatablePlants.add(newPlant);
         }
     } else { // objectType === 'decor'
         const decorConfig = config as DecorConfig;
-        const rotationY = (initialState as DecorInfo)?.rotationY ?? decorConfig.defaultRotationY ?? 0; // Use loaded rotation if available
+        const rotationY = (initialState as DecorInfo)?.rotationY ?? decorConfig.defaultRotationY ?? 0;
         const newDecor: DecorInfo = {
             decorTypeId: typeId,
             size: { ...objectSize },
             gridPos: { row, col },
-            instanceId: instanceId,
             rotationY: rotationY,
-             // Apply other initial state if needed
-             ...(initialState as Partial<DecorInfo>)
+            object3D: clonedObject as THREE.Group, // Store reference to the clone
+            ...(initialState as Partial<DecorInfo>) // Apply loaded state
         };
         newGridObject = newDecor;
         allDecor.add(newDecor);
     }
 
-    // --- 4. Update Grid & Mapping ---
+     // --- Store reference from Object3D back to the info ---
+    clonedObject.userData.gridInfo = newGridObject;
+    clonedObject.userData.objectType = objectType; // Store type for easier identification if needed
+    clonedObject.userData.typeId = typeId;
+
+    // --- 3. Update Grid & Pointers ---
     gardenGrid[row][col] = newGridObject;
-    // Place pointers in grid
-    for (let rOffset = 0; rOffset < objectSize.rows; rOffset++){
-		for (let cOffset = 0; cOffset < objectSize.cols; cOffset++) {
+    for (let rOffset = 0; rOffset < objectSize.rows; rOffset++) {
+        for (let cOffset = 0; cOffset < objectSize.cols; cOffset++) {
             if (rOffset === 0 && cOffset === 0) continue;
             const targetRow = row + rOffset;
             const targetCol = col + cOffset;
@@ -1113,151 +1049,138 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
                 gardenGrid[targetRow][targetCol] = { pointerTo: { row, col } };
             }
         }
-	}
-
-	// Add to reverse lookup map
-    const instanceMap = instanceIdToDataMap.get(instancedMesh.uuid);
-    if (instanceMap) {
-        instanceMap.set(instanceId, newGridObject);
-    } else {
-         console.error(`Placement Error: Instance map not found for mesh UUID: ${instancedMesh.uuid}`);
-         // Attempt cleanup? This shouldn't happen if setup is correct.
-         // Maybe remove object from allPlants/allDecor here?
-         return;
     }
-    console.log(`Placed ${objectType} ${typeId} at [${row}, ${col}], assigned instanceId ${instanceId} to mesh ${instancedMesh.uuid.substring(0, 4)}...`);
 
-    // --- 5. Set Initial Instance Transform & Color (using GLTF data) ---
-    const worldPos = gridAreaCenterToWorld(row, col, objectSize.rows, objectSize.cols);
-    let initialScaleFactor = 1.0; // Base scale factor
-    let finalScale = 1.0;         // Scale including growth/decor scaling
+    // --- 4. Set Initial Transform and State (Color, etc.) ---
+    const worldPosCenter = gridAreaCenterToWorld(row, col, objectSize.rows, objectSize.cols); // Center of the grid area
+    let currentGrowthScale = 1.0; // Scale based on growth progress
+    let baseObjectScale = 1.0;    // Scale from decor config (if any)
     let objectRotationY = 0;
-    let initialColor = healthyColor; // Default
 
+    // --- Apply Plant Tinting (if applicable) ---
     if (objectType === 'plant') {
-		const plantInfo = newGridObject as PlantInfo;
-		const plantConfig = config as PlantConfig;
-        // Scale factor based on initial growth state
-        initialScaleFactor = MathUtils.lerp(plantConfig.initialScale, plantConfig.maxScale, plantInfo.growthProgress);
-        finalScale = cachedGltf.baseScale * initialScaleFactor;
-        initialColor = plantInfo.state === 'needs_water' ? thirstyColor : healthyColor;
-        // plant rotation is 0 for now
-    } else { // objectType === 'decor'
+        const plantInfo = newGridObject as PlantInfo;
+        const plantConfig = config as PlantConfig;
+        currentGrowthScale = MathUtils.lerp(plantConfig.initialScale, plantConfig.maxScale, plantInfo.growthProgress);
+        objectRotationY = 0;
+
+        const initialColorTint = plantInfo.state === 'needs_water'
+            ? (plantConfig.thirstyColorTint ?? new THREE.Color(0xaaaaaa))
+            : (plantConfig.healthyColorTint ?? new THREE.Color(0xffffff));
+
+        clonedObject.traverse((child) => {
+             if (child instanceof THREE.Mesh && child.material) {
+                const materials = Array.isArray(child.material) ? child.material : [child.material];
+                // IMPORTANT: Clone materials *before* storing/modifying
+                const clonedMaterials = materials.map(mat => {
+                     if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial) {
+                        const clonedMat = mat.clone();
+                        originalMaterialColors.set(clonedMat, clonedMat.color.clone()); // Store original of the clone
+                        tempColor.copy(clonedMat.color).multiply(initialColorTint);
+                        clonedMat.color.copy(tempColor);
+                        return clonedMat;
+                    }
+                    return mat; // Return original if not supported type
+                });
+                 // Assign back cloned/modified materials
+                child.material = Array.isArray(child.material) ? clonedMaterials : clonedMaterials[0];
+             }
+        });
+
+    } else { // Decor
         const decorInfo = newGridObject as DecorInfo;
-        // Decor scale is fixed (unless config changes)
-        initialScaleFactor = 1.0; // Or read from config if decor can scale?
-        finalScale = cachedGltf.baseScale * initialScaleFactor;
+        const decorConfig = config as DecorConfig;
+        baseObjectScale = decorConfig.baseScale ?? 1.0;
         objectRotationY = decorInfo.rotationY;
-        // Decor color is typically from its own material, but we can tint if needed
-        // initialColor = ...;
     }
+    // --- End Tinting ---
 
-    // Apply transform
-    const worldY = cachedGltf.centerOffsetY * initialScaleFactor; // Adjust Y based on normalized offset and current scale factor
-    tempObject.position.set(worldPos.x, worldY, worldPos.z);
-	tempObject.scale.set(finalScale, finalScale, finalScale);
-	tempObject.rotation.set(0, objectRotationY, 0);
-	tempObject.updateMatrix();
-	instancedMesh.setMatrixAt(instanceId, tempObject.matrix);
-    instancedMesh.instanceMatrix.needsUpdate = true;
+    // --- Calculate Final Scale and Position ---
+    const finalScale = cachedGltfData.baseScale * currentGrowthScale * baseObjectScale;
 
-    // Apply initial color tinting
-    if (instancedMesh.instanceColor) {
-        instancedMesh.instanceColor.setXYZ(instanceId, initialColor.r, initialColor.g, initialColor.b);
-        instancedMesh.instanceColor.needsUpdate = true;
-    }
+    // Apply the pre-calculated offsets, scaled appropriately
+    const offsetX = cachedGltfData.centerOffsetX * finalScale;
+    const offsetY = cachedGltfData.centerOffsetY * finalScale; // Y offset depends only on Y scale component
+    const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
 
-    // --- 6. Increment Instance Count ---
-    instancedMesh.count = instanceId + 1;
-    console.log(`   Mesh ${instancedMesh.uuid.substring(0, 4)}... count is now ${instancedMesh.count}`);
+    // Final position is the grid area center + scaled offsets
+    clonedObject.position.set(
+        worldPosCenter.x + offsetX,
+        worldPosCenter.y + offsetY, // Apply Y offset relative to ground
+        worldPosCenter.z + offsetZ
+    );
 
+	clonedObject.scale.set(finalScale, finalScale, finalScale);
+	clonedObject.rotation.set(0, objectRotationY, 0);
 
-    // --- 7. Save and Render ---
-    // DO NOT trigger save when called from loadGardenState
-	if (!initialState) { // Only save/render if NOT loading
+    // --- 5. Add to Scene ---
+    scene.add(clonedObject);
+    console.log(`Placed ${objectType} ${typeId} at [${row}, ${col}] (World Pos: ${clonedObject.position.x.toFixed(2)}, ${clonedObject.position.y.toFixed(2)}, ${clonedObject.position.z.toFixed(2)})`);
+
+    // --- 6. Save and Render ---
+    if (!initialState) { // Only save/render if NOT loading from save data
 		debouncedSaveGardenState();
-		if (!isRenderLoopActive) {
-			requestRender();
-		}
+		requestRender();
 	}
 }
 // --- End Function to Place Grid Object ---
 
-// --- Function to Water Plant (Uses Pointer Resolution) ---
+// --- Function to Water Plant ---
 function waterPlantAt(row: number, col: number) {
-	// 1. Find the actual PlantInfo, resolving pointers
 	const gridObjectInfo = getGridObjectInfoAt(row, col);
 
-	// 2. Check if it's actually a PlantInfo object
 	if (gridObjectInfo && 'plantTypeId' in gridObjectInfo) {
-		const plantInfo = gridObjectInfo; // We know it's a plant now
-		console.log(`Watering plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] (triggered from [${row}, ${col}])`);
+		const plantInfo = gridObjectInfo;
+		console.log(`Watering plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]`);
 		let visualStateChanged = false;
 		let timeUpdated = false;
 		const now = Date.now();
 
 		if (plantInfo.state === 'needs_water') {
 			plantInfo.state = 'healthy';
-            plantInfo.lastUpdateTime = now; // Reset growth timer base
-            plantInfo.lastWateredTime = now; // Update last watered time
+            plantInfo.lastUpdateTime = now;
+            plantInfo.lastWateredTime = now;
 			console.log(`   Plant is now healthy.`);
-			updatePlantVisuals(plantInfo); // Update visuals
+			updatePlantVisuals(plantInfo); // Update visuals (handles color change)
 			visualStateChanged = true;
 			timeUpdated = true;
 
-			// Add back to updatable list ONLY if it can now grow
-            // const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default; // NOTE: don't know why AI thinks config is needed here?
             if (plantInfo.growthProgress < 1.0) {
-                 // Only add if not fully grown
                  updatablePlants.add(plantInfo);
-                 console.log(`   Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] added back to updatable list (can grow). Size: ${updatablePlants.size}`);
-                 // Request a render if the loop isn't active, as growth might start now
+                 console.log(`   Plant added back to updatable list.`);
+                 // Request render only if loop isn't active AND visual state changed
                  if (!isRenderLoopActive) requestRender();
-            } else {
-                 console.log(`   Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] is healthy but fully grown, not added to updatable list.`);
             }
 		} else {
-			plantInfo.lastWateredTime = now; // Reset thirst timer
+			plantInfo.lastWateredTime = now; // Reset thirst timer even if healthy
 			console.log(`   Plant was already healthy, reset thirst timer.`);
 			timeUpdated = true;
-			// No change needed to updatablePlants list if already healthy
-			// TODO: Add feedback even if already healthy
+            // Optional: maybe a visual cue for watering a healthy plant?
 		}
 
-		// Trigger Save and Render
-		if (visualStateChanged || timeUpdated) { // If state OR timer changed
+		if (visualStateChanged || timeUpdated) {
             if(visualStateChanged && !isRenderLoopActive){
-                 // If the visuals actually changed (went from thirsty to healthy)
-                 // and the loop isn't already running, request a single frame.
-                 console.log("Requesting render due to visual state change on watering.");
-                 requestRender();
+                requestRender();
             }
-			debouncedSaveGardenState(); // Save state (debounced)
+			debouncedSaveGardenState();
 		}
 	} else if (gridObjectInfo) {
-         console.log(`Cannot water object at [${row}, ${col}], it's other object.`);
+         console.log(`Cannot water: object at [${row}, ${col}] is decor.`);
     } else {
         console.log(`No object found at or pointed to by [${row}, ${col}] to water.`);
     }
 }
 // --- End Function to Water Plant ---
 
+// --- handleCanvasPointerDown (REWRITTEN for individual objects) ---
 function handleCanvasPointerDown(event: PointerEvent) {
-	// --- Prevent tool action if currently dragging an item ---
-	if (isPointerDragging) {
-        console.log("Canvas pointer down ignored (dragging item).");
-        return;
-    }
-    // --- End Prevent ---
+	if (isPointerDragging || !container || !camera || !scene) return; // Ignore if dragging UI item or refs missing
 
 	const currentAction = get(selectedAction);
-	if (currentAction?.type !== 'tool') {
-		return; // Ignore if not a tool action
-	}
+	if (currentAction?.type !== 'tool') return;
 
-	isInteracting = true; // Mark interaction start
+	isInteracting = true; // Mark interaction start (for tools)
 
-	// --- Raycasting Logic ---
 	const raycaster = new THREE.Raycaster();
 	const mouse = new THREE.Vector2();
 	const rect = container.getBoundingClientRect();
@@ -1265,118 +1188,87 @@ function handleCanvasPointerDown(event: PointerEvent) {
 	mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
 	raycaster.setFromCamera(mouse, camera);
 
-	// --- Target ONLY the Instanced Meshes and the Ground ---
-    // Create a list of objects to intersect
+	// --- Target Ground + All Placed Objects ---
     const objectsToIntersect: THREE.Object3D[] = [ground];
-    for (const typeId in instancedMeshes) {
-        // Only intersect if the mesh has active instances
-        if (instancedMeshes[typeId].count > 0) {
-             objectsToIntersect.push(instancedMeshes[typeId]);
-        }
-    }
+    allPlants.forEach(p => { if (p.object3D) objectsToIntersect.push(p.object3D); });
+    allDecor.forEach(d => { if (d.object3D) objectsToIntersect.push(d.object3D); });
 
-	// Raycast against the specific list
-	const intersects = raycaster.intersectObjects(objectsToIntersect, false); // `false` because InstancedMesh is not recursive container
+	// Raycast against the list, check recursively INSIDE the object groups
+	const intersects = raycaster.intersectObjects(objectsToIntersect, true); // true = recursive
 
 	let interactionOccurred = false;
     let hitInfo: { info: PlantInfo | DecorInfo, type: 'plant' | 'decor' } | null = null;
     let groundHitPoint: THREE.Vector3 | null = null;
 
-	// --- Phase 1: Check for direct hit on Plant/Decor ---
+	// --- Process Intersects ---
     if (intersects.length > 0) {
         for (const intersect of intersects) {
-            const intersectedObject = intersect.object;
+            if (intersect.object === ground && !groundHitPoint) {
+                groundHitPoint = intersect.point; // Record first ground hit
+                // Don't break, an object might be closer
+            } else if (intersect.object !== ground) {
+                // Hit something other than ground - likely a mesh within a placed object's group
+                let targetObject = intersect.object;
+                let gridInfo: PlantInfo | DecorInfo | undefined;
 
-            if (intersect.object instanceof THREE.InstancedMesh && intersect.instanceId !== undefined) {
-				const hitMesh = intersect.object;
-                const hitInstanceId = intersect.instanceId;
-
-				// Look up the data using the map
-				const instanceMap = instanceIdToDataMap.get(hitMesh.uuid);
-                const objectInfo = instanceMap?.get(hitInstanceId);
-
-                if (objectInfo) {
-                    const objectType = 'plantTypeId' in objectInfo ? 'plant' : 'decor';
-                    hitInfo = { info: objectInfo, type: objectType };
-                    console.log(`Raycast direct hit on InstancedMesh ${hitMesh.userData.typeId}, instance ${hitInstanceId}, found ${objectType} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}]`);
-                    break; // Found the target instance, stop searching
+                // Traverse up to find the parent Group with our stored gridInfo
+                while (targetObject.parent && !gridInfo) {
+                    targetObject = targetObject.parent;
+                    gridInfo = targetObject.userData.gridInfo as (PlantInfo | DecorInfo | undefined);
                 }
-				else{
-					console.warn(`Raycast hit instance ${hitInstanceId} on mesh ${hitMesh.userData.typeId}, but no data found in map.`);
-					// This might happen if map is out of sync or instanceId is beyond count somehow
-				}
-            } else if (intersect.object === ground && !groundHitPoint) {
-                 // Record the first ground hit point
-				groundHitPoint = intersect.point;
-				// Don't break here, an InstancedMesh hit might be closer
+
+                if (gridInfo) {
+                    // Found the main object and its associated data
+                    const objectType = 'plantTypeId' in gridInfo ? 'plant' : 'decor';
+                    hitInfo = { info: gridInfo, type: objectType };
+                    console.log(`Raycast direct hit on ${objectType} ${gridInfo.object3D?.userData.typeId} at [${gridInfo.gridPos.row}, ${gridInfo.gridPos.col}]`);
+                    break; // Found the target object group, stop searching
+                } else {
+                    // This shouldn't happen if userData is set correctly on placement
+                    console.warn("Raycast hit an object mesh, but couldn't find parent with gridInfo:", intersect.object);
+                }
             }
-        }
+        } // End intersect loop
     }
 
-    // --- Phase 2: Perform Action based on Tool and Hit Result ---
+    // --- Perform Action ---
     if (currentAction.toolType === 'water') {
         if (hitInfo?.type === 'plant') {
-            // Direct hit on a plant - water it
-            console.log(`Watering plant directly at [${hitInfo.info.gridPos.row}, ${hitInfo.info.gridPos.col}]`);
             waterPlantAt(hitInfo.info.gridPos.row, hitInfo.info.gridPos.col);
             interactionOccurred = true;
         } else if (groundHitPoint) {
-            // No direct instance hit, but hit the ground. Check the grid cell.
             const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
             if (gridCoords) {
                 const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
                 if (objectInCell && 'plantTypeId' in objectInCell) {
-                    // Found a plant in the grid cell clicked - water it
-                    console.log(`Watering plant via ground click at grid [${gridCoords.row}, ${gridCoords.col}], target: [${objectInCell.gridPos.row}, ${objectInCell.gridPos.col}]`);
-                    waterPlantAt(gridCoords.row, gridCoords.col); // Use clicked coords, waterPlantAt resolves pointer
+                    waterPlantAt(gridCoords.row, gridCoords.col); // Use clicked cell coords
                     interactionOccurred = true;
-                } else {
-                     console.log(`Ground click at [${gridCoords.row}, ${gridCoords.col}], but no plant found.`);
                 }
             }
-        } else {
-             console.log("Water tool clicked, but missed plant and ground?");
         }
-
     } else if (currentAction.toolType === 'remove') {
         if (hitInfo) {
-            // Direct hit on plant or decor - remove it
-            const info = hitInfo.info;
-            console.log(`Removing ${hitInfo.type} directly at [${info.gridPos.row}, ${info.gridPos.col}]`);
-            removeGridObjectAt(info.gridPos.row, info.gridPos.col);
+            removeGridObjectAt(hitInfo.info.gridPos.row, hitInfo.info.gridPos.col);
             interactionOccurred = true;
         } else if (groundHitPoint) {
-            // No direct hit, but hit the ground. Check the grid cell.
             const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
             if (gridCoords) {
                 const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
-                if (objectInCell) {
-                    // Found *something* (plant or decor) in the grid cell - remove it
-                    const objectType = 'plantTypeId' in objectInCell ? 'plant' : 'decor';
-                    console.log(`Removing ${objectType} via ground click at grid [${gridCoords.row}, ${gridCoords.col}], target: [${objectInCell.gridPos.row}, ${objectInCell.gridPos.col}]`);
-                    removeGridObjectAt(gridCoords.row, gridCoords.col); // Use clicked coords, removeGridObjectAt resolves pointer
+                if (objectInCell) { // Check if *any* object is there
+                    removeGridObjectAt(gridCoords.row, gridCoords.col); // Use clicked cell coords
                     interactionOccurred = true;
-                } else {
-                     console.log(`Ground click at [${gridCoords.row}, ${gridCoords.col}], but no object found to remove.`);
                 }
             }
-        } else {
-             console.log("Remove tool clicked, but missed object and ground?");
         }
     }
-    // Add other tool handlers here if needed ('place' tool doesn't use click, it uses drag/drop)
-	// End if intersects.length > 0
-	// --- Finalization ---
-    isInteracting = false; // Interaction ends immediately for tools
+    // Add other tools if needed
 
-    // Request render if an action occurred *while idle*
-    // Note: place/remove/water functions already handle their own render requests now.
-    // This check might be redundant, but safe to keep.
-    // if (interactionOccurred && !isRenderLoopActive) {
-        // console.log("Tool interaction completed while idle, ensuring render request.");
-        // requestRender(); // The action functions should cover this
-    // }
+	// --- Finalization ---
+    isInteracting = false; // Tool interaction ends immediately
+    // Request render if needed (actions like remove/water call requestRender internally)
+    // if (interactionOccurred && !isRenderLoopActive) { requestRender(); }
 }
+// --- End handleCanvasPointerDown ---
 
 // --- NEW: Pointer Move Handler (for dragging items) ---
 // Use throttle settings from the old dragover logic
@@ -1526,210 +1418,110 @@ function handlePointerUpOrCancel(event: PointerEvent) {
 }
 // --- End Pointer Up/Cancel Handler ---
 
-// --- NEW: Asset Loading Function ---
+// --- Asset Loading Function (Keep structure, uses new prepare function) ---
 async function loadAssets() {
     console.log("Starting asset loading...");
     const loadPromises: Promise<void>[] = [];
     const allConfigs = { ...plantConfigs, ...decorConfigs };
-
-    // --- Collect all unique model paths ---
     const modelPathsToLoad = new Set<string>();
+
     for (const typeId in allConfigs) {
         if (typeId === 'default' && !plantConfigs.default.modelPath) continue;
         const config = allConfigs[typeId];
-        if (config.modelPath) {
-            modelPathsToLoad.add(config.modelPath);
-        } else {
-            console.warn(`No model path specified for typeId: ${typeId}`);
-        }
+        if (config.modelPath) modelPathsToLoad.add(config.modelPath);
+        else console.warn(`No model path for ${typeId}`);
     }
 
-    // --- Load each unique path ---
     for (const modelPath of modelPathsToLoad) {
-        if (!gltfCache[modelPath]) { // Only load if not already cached (might be redundant check)
-             const loadPromise = new Promise<void>((resolve, reject) => {
-                console.log(`Loading model: ${modelPath}`);
-                gltfLoader.load(
-                    modelPath,
-                    (gltf) => {
-                        console.log(`Successfully loaded: ${modelPath}`);
-                        const preparedData = extractAndPrepareGltfData(gltf.scene);
+        if (!gltfCache[modelPath]) {
+            const loadPromise = new Promise<void>((resolve, reject) => {
+                gltfLoader.load( modelPath, (gltf) => {
+                        console.log(`Loaded: ${modelPath}`);
+                        // Determine target size based on config using this model
+                        let targetSize = CELL_SIZE; // Default
+                        // Find a config using this model to hint at size (best effort)
+                        const configUsingModel = Object.values(allConfigs).find(c => c.modelPath === modelPath);
+                        if(configUsingModel && configUsingModel.size.rows === 1 && configUsingModel.size.cols === 1) {
+                             targetSize = CELL_SIZE;
+                        } else if (configUsingModel) {
+                            // For multi-cell items, maybe normalize based on diagonal or largest dim?
+                            // Let's stick to CELL_SIZE normalization for simplicity, the config's baseScale can adjust later if needed.
+                             targetSize = CELL_SIZE; // Keep target size 1 cell for normalization base
+                        }
+
+                        const preparedData = extractAndPrepareGltfData(gltf.scene, targetSize);
                         if (preparedData) {
                             gltfCache[modelPath] = preparedData;
-                            resolve();
                         } else {
-                             console.error(`Failed to extract data from GLTF: ${modelPath}`);
-                             resolve(); // Resolve anyway so Promise.all doesn't fail? Or reject?
-                             // reject(new Error(`Failed processing ${modelPath}`)); // Option to reject
+                            console.error(`Failed to extract data from GLTF: ${modelPath}`);
                         }
+                        resolve(); // Resolve even if extraction fails, to not block loading
                     },
-                    undefined, // Optional progress callback
+                    undefined,
                     (error) => {
                         console.error(`Error loading GLTF: ${modelPath}`, error);
-                        resolve(); // Resolve even on error? Or reject?
-                         // reject(error); // Option to reject
+                        resolve(); // Resolve on error too
                     }
                 );
             });
             loadPromises.push(loadPromise);
-        } else {
-             console.log(`Model already cached: ${modelPath}`);
         }
     }
-
 
     try {
         await Promise.all(loadPromises);
-        assetsLoaded = true; // Set flag on success
-        console.log("All assets loaded successfully (or errors handled).");
+        assetsLoaded = true;
+        console.log("Asset loading process finished.");
     } catch (error) {
         console.error("Error during asset loading:", error);
-        assetsLoaded = false; // Ensure flag is false on critical failure
-        // Rethrow or handle as needed
-        throw error; // Optional: rethrow if caller needs to know about failure
+        assetsLoaded = false;
     }
 }
-
-// --- NEW: Instanced Mesh Setup Function ---
-function setupInstancedMeshes() {
-    console.log("Setting up Instanced Meshes...");
-    instancedMeshes = {}; // Clear existing refs
-    instanceIdToDataMap.clear(); // Clear existing maps
-
-    // --- Plants ---
-    for (const typeId in plantConfigs) {
-        if (typeId === 'default' && !plantConfigs.default.modelPath) continue;
-
-        const config = plantConfigs[typeId];
-        if (!config || !config.modelPath) {
-            console.error(`Plant config or modelPath missing for typeId: ${typeId}`);
-            continue;
-        }
-        const cachedData = gltfCache[config.modelPath];
-
-        if (!cachedData || !cachedData.geometry || !cachedData.material) {
-            console.error(`Cannot create InstancedMesh for plant ${typeId}: Missing cached GLTF data.`);
-            continue;
-        }
-
-        // Clone the material to allow instance-specific modifications (like vertexColors)
-        // without affecting other meshes that might share the original material.
-        let instanceMaterial = cachedData.material;
-         if (Array.isArray(instanceMaterial)) {
-             console.warn(`Plant ${typeId} material is array, using first element cloned.`);
-             instanceMaterial = instanceMaterial[0].clone();
-         } else {
-             instanceMaterial = instanceMaterial.clone();
-         }
-
-        // IMPORTANT: Enable vertex colors on the cloned material if we intend to use the color attribute for tinting
-        if (instanceMaterial instanceof THREE.MeshStandardMaterial || instanceMaterial instanceof THREE.MeshBasicMaterial) {
-             instanceMaterial.vertexColors = true;
-             instanceMaterial.needsUpdate = true; // Required after changing properties
-        }
-
-        const mesh = new THREE.InstancedMesh(cachedData.geometry, instanceMaterial, MAX_INSTANCES_PER_TYPE);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        mesh.userData.objectType = 'plant';
-        mesh.userData.typeId = typeId;
-
-        // Add Instanced Color Attribute (for tinting: healthy/thirsty)
-        const colors = new Float32Array(MAX_INSTANCES_PER_TYPE * 3);
-        const colorAttribute = new THREE.InstancedBufferAttribute(colors, 3);
-        for (let i = 0; i < MAX_INSTANCES_PER_TYPE; i++) {
-             healthyColor.toArray(colors, i * 3); // Initialize tint to healthy (white)
-        }
-        // Attach attribute ONLY to the geometry INSTANCE used by THIS mesh
-        mesh.geometry.setAttribute('color', colorAttribute);
-        mesh.instanceColor = colorAttribute; // Keep reference for updates
-
-        mesh.count = 0;
-        scene.add(mesh);
-        instancedMeshes[typeId] = mesh;
-        instanceIdToDataMap.set(mesh.uuid, new Map());
-        console.log(`Created InstancedMesh for plant: ${typeId}`);
-    }
-
-    // --- Decor ---
-    for (const typeId in decorConfigs) {
-		const config = decorConfigs[typeId];
-        // Check if config and its modelPath exist before using them
-        if (!config || !config.modelPath) {
-            console.error(`Decor config or modelPath missing for typeId: ${typeId}`);
-            continue; // Skip this iteration if config or path is missing
-        }
-        const cachedData = gltfCache[config.modelPath];
-
-		if (!cachedData || !cachedData.geometry || !cachedData.material) {
-            console.error(`Cannot create InstancedMesh for decor ${typeId}: Missing cached GLTF data.`);
-            continue;
-        }
-
-        // Decor usually doesn't need tinting, use the shared material directly (or clone if needed later)
-        let instanceMaterial = cachedData.material; // Could be shared or cloned
-        // Example: Clone if you plan unique changes per decor type instance later
-        // instanceMaterial = cachedData.material.clone();
-
-		const mesh = new THREE.InstancedMesh(cachedData.geometry, instanceMaterial, MAX_INSTANCES_PER_TYPE);
-		mesh.castShadow = true;
-		mesh.receiveShadow = true;
-		mesh.userData.objectType = 'decor';
-		mesh.userData.typeId = typeId;
-		// No instanceColor needed for decor *yet*
-		mesh.count = 0;
-		scene.add(mesh);
-		instancedMeshes[typeId] = mesh;
-		instanceIdToDataMap.set(mesh.uuid, new Map());
-		console.log(`Created InstancedMesh for decor: ${typeId}`);
-    }
-}
+// --- End Asset Loading ---
 
 // --- Persistence Functions ---
 // Debounce saveGardenState with a delay (e.g., 1.5 seconds)
 const DEBOUNCED_SAVE_DELAY_MS = 1500;
 const debouncedSaveGardenState = debounce(saveGardenState, DEBOUNCED_SAVE_DELAY_MS);
 
-// Original save function
+// Save Function
 function saveGardenState() {
 	try {
-		if (typeof localStorage === 'undefined') {
-			console.warn("localStorage not available, cannot save state.");
-			return;
-		}
-		console.log(`Attempting save at ${new Date().toLocaleTimeString()} using Set iteration.`); // Log method
+		if (typeof localStorage === 'undefined') return;
+		console.log(`Attempting save at ${new Date().toLocaleTimeString()}.`);
 
-        // 1. Initialize the target structure (still a grid for loading compatibility)
-		const serializableGrid: SerializableGardenGrid = Array(GRID_DIVISIONS).fill(null).map(() => Array(GRID_DIVISIONS).fill(null));
+        const serializableGrid: SerializableGardenGrid = Array(GRID_DIVISIONS).fill(null).map(() => Array(GRID_DIVISIONS).fill(null));
 
-        // 2. Populate the grid from the 'allPlants' set
-        for (const plantInfo of allPlants) {
-            const { row, col } = plantInfo.gridPos;
-            if (row >= 0 && row < GRID_DIVISIONS && col >= 0 && col < GRID_DIVISIONS) {
-                 // Create the serializable version - explicitly exclude instanceId
-                 // Spread operator copies all own enumerable properties
-                 const { instanceId, ...serializableData } = plantInfo; // Destructure to exclude instanceId
-                 serializableGrid[row][col] = { ...serializableData, type: 'plant' };
-            } else {
-                console.warn(`Plant with id ${plantInfo.plantTypeId} has invalid gridPos [${row}, ${col}] during save.`);
+        const serialize = (info: PlantInfo | DecorInfo): SerializablePlantInfo | SerializableDecorInfo | null => {
+             if ('plantTypeId' in info) {
+                const { object3D, originalMaterialColors, ...dataToSave } = info; // Exclude non-serializable fields
+                return { ...dataToSave, type: 'plant' };
+             } else if ('decorTypeId' in info) {
+                 const { object3D, ...dataToSave } = info; // Exclude non-serializable fields
+                 return { ...dataToSave, type: 'decor' };
+             }
+             return null;
+        }
+
+        // Iterate over grid, find main objects, serialize them
+        for (let r = 0; r < GRID_DIVISIONS; r++) {
+            for (let c = 0; c < GRID_DIVISIONS; c++) {
+                const cell = gardenGrid[r][c];
+                // Only save if it's the *main* info block (not null or a pointer)
+                if (cell && !('pointerTo' in cell)) {
+                     const serializableData = serialize(cell);
+                     if(serializableData) {
+                        serializableGrid[r][c] = serializableData;
+                     }
+                } else if (cell === null) {
+                    serializableGrid[r][c] = null;
+                }
+                 // Pointers are implicitly handled by the main object's position
             }
         }
 
-        // 3. Populate the grid from the 'allDecor' set
-        for (const decorInfo of allDecor) {
-            const { row, col } = decorInfo.gridPos;
-             if (row >= 0 && row < GRID_DIVISIONS && col >= 0 && col < GRID_DIVISIONS) {
-                // Create the serializable version - explicitly exclude instanceId
-                 const { instanceId, ...serializableData } = decorInfo; // Destructure to exclude instanceId
-                 serializableGrid[row][col] = { ...serializableData, type: 'decor' };
-            } else {
-                console.warn(`Decor with id ${decorInfo.decorTypeId} has invalid gridPos [${row}, ${col}] during save.`);
-            }
-        }
-
-        // 4. Serialize and save the constructed grid
 		localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(serializableGrid));
-		console.log(`Garden state saved. Saved ${allPlants.size} plants and ${allDecor.size} decor items.`);
+		console.log(`Garden state saved. (${allPlants.size} plants, ${allDecor.size} decor)`);
 
 	} catch (error) {
 		console.error("Failed to save garden state:", error);
@@ -1739,62 +1531,56 @@ function saveGardenState() {
 function loadGardenState() {
 	try {
 		const savedData = localStorage.getItem(LOCAL_STORAGE_KEY);
-		if (savedData) {
-			// Explicitly type the loaded grid based on our SerializableGridCell union
+		if (savedData && assetsLoaded) { // Ensure assets are ready before loading
             const loadedGrid: SerializableGridCell[][] = JSON.parse(savedData);
 			console.log("Loading saved garden state...");
 
-			// Initialize gardenGrid first (important!)
-			initializeGrid(); // Use the function to ensure clean grid
-
-			// Reset tracking sets (important if loading without page refresh)
+			initializeGrid(); // Start with clean grid
             allPlants.clear();
             allDecor.clear();
             updatablePlants.clear();
+            // No need to reset instance counts/maps
 
-			// Reset instance counts and maps (assuming meshes exist from onMount)
-            for(const typeId in instancedMeshes) {
-                 instancedMeshes[typeId].count = 0;
-                 instanceIdToDataMap.get(instancedMeshes[typeId].uuid)?.clear();
-            }
+            // Clear existing objects from the scene first (important if reloading without page refresh)
+            allPlants.forEach(p => { if (p.object3D) scene.remove(p.object3D); }); // Assuming scene exists
+            allDecor.forEach(d => { if (d.object3D) scene.remove(d.object3D); });
 
 			for (let r = 0; r < GRID_DIVISIONS; r++) {
 				for (let c = 0; c < GRID_DIVISIONS; c++) {
 					const savedCell = loadedGrid[r]?.[c];
 
-					// Only process if not null
+					// If it's a saved object (not null, not a pointer implicitly)
 					if (savedCell) {
-						// Check if this spot is already occupied (e.g., by a pointer from a previously loaded object)
-						// This shouldn't happen with correct saving, but good safety check.
+						// Check grid spot again just in case (should be redundant with initializeGrid)
 						if (gardenGrid[r][c] !== null) {
-							console.warn(`Load conflict: Cell [${r}, ${c}] should be empty but is not. Skipping load for saved data at this position.`);
+							console.warn(`Load conflict: Cell [${r}, ${c}] not empty.`);
 							continue;
 						}
 
-						// Extract type and data (excluding 'type')
                         const { type, ...loadedData } = savedCell;
+                        const typeId = type === 'plant' ? (loadedData as SerializablePlantInfo).plantTypeId : (loadedData as SerializableDecorInfo).decorTypeId;
 
-                        // Call the modified placeGridObjectAt, passing loadedData as initialState
-                        placeGridObjectAt(
-                            r, c,
-                            type, // 'plant' or 'decor'
-                            type === 'plant' ? (loadedData as SerializablePlantInfo).plantTypeId : (loadedData as SerializableDecorInfo).decorTypeId,
-                            loadedData // Pass the rest of the data as initial state
-                        );
-					} // End if(savedCell)
-				} // End inner loop (cols)
-			} // End outer loop (rows)
-			console.log("Garden state loaded.", gardenGrid);
+                        // Call placeGridObjectAt, passing loadedData as initialState
+                        // It will handle cloning, placing pointers, adding to sets etc.
+                        placeGridObjectAt(r, c, type, typeId, loadedData);
+					}
+				}
+			}
+			console.log("Garden state loaded.");
+            requestRender(); // Render the loaded state
 			return true;
-		}
+		} else if (!assetsLoaded) {
+            console.warn("Attempted to load state before assets were ready. Load deferred.");
+            // We might need to trigger loadGardenState again after assets load promise resolves
+        }
 	} catch (error) {
 		console.error("Failed to load or parse garden state:", error);
-		localStorage.removeItem(LOCAL_STORAGE_KEY);
-		initializeGrid(); // Initialize fresh grid on error
+		// localStorage.removeItem(LOCAL_STORAGE_KEY); // Optional: clear bad save data
+		initializeGrid(); // Start fresh
 	}
 	return false;
 }
-// --- End Persistence Functions ---
+// --- End Persistence ---
 
 // performs render on window resize
 function performResize() {
@@ -1827,138 +1613,107 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
     // saveGardenState();
 };
 
+// --- renderFrame (Adjusted for new update logic) ---
 function renderFrame() {
-	// Reset the single frame request flag at the beginning of the frame
 	renderRequested = false;
-	animationFrameId = undefined; // Clear the ID for this frame
-
-	// --- Conditional Day/Night Update ---
-    const now = new Date(); // Get current time once per frame
+	animationFrameId = undefined;
+    const now = new Date();
     const currentMinute = now.getMinutes();
 
+    // --- Day/Night Update ---
     if (currentMinute !== lastDayNightUpdateMinute) {
-        // console.log(`Updating Day/Night Cycle: Minute changed from ${lastDayNightUpdateMinute} to ${currentMinute}`);
-        updateDayNightCycle(now); // Pass the 'now' Date object to avoid getting time again
-        lastDayNightUpdateMinute = currentMinute; // Update the cache
+        updateDayNightCycle(now);
+        lastDayNightUpdateMinute = currentMinute;
     }
-    // --- End Conditional Day/Night Update -
 
     let needsSave = false;
 	const nowTimestamp = now.getTime();
-
-	// --- List to track plants that become idle this frame ---
     const plantsToRemoveFromUpdateList: PlantInfo[] = [];
 
-	// --- Iterate ONLY over plants potentially needing updates ---
+	// --- Update Growable Plants ---
     for (const plantInfo of updatablePlants) {
         let shouldBeRemoved = false;
-        let needsVisualUpdate = false; // Track if *this* plant needs visuals updated
+        let needsVisualUpdateFromGrowth = false;
 
-        // --- Check for Thirst ---
+        // Check Thirst first
         const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
         if (plantInfo.state === 'healthy' && (nowTimestamp - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
-            // --- Became Thirsty ---
             plantInfo.state = 'needs_water';
-            plantInfo.lastUpdateTime = nowTimestamp; // Update timestamp
+            plantInfo.lastUpdateTime = nowTimestamp;
             needsSave = true;
+            updatePlantVisuals(plantInfo); // Update color immediately
+            shouldBeRemoved = true; // Stop growth updates
             console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] became thirsty.`);
-            // Update visuals IMMEDIATELY
-            updatePlantVisuals(plantInfo);
-            // Mark for removal from the *growth* update list because it stopped growing
-            shouldBeRemoved = true;
         } else if (plantInfo.state === 'healthy') {
-            // --- Growth Update ---
-            // Only grow if healthy
-            const growthHappened = updatePlantGrowth(plantInfo);
-            if (growthHappened) {
-                needsVisualUpdate = true;
+            // Healthy: Check Growth
+            needsVisualUpdateFromGrowth = updatePlantGrowth(plantInfo); // Updates progress and lastUpdateTime
+
+            if (needsVisualUpdateFromGrowth) {
+                 updatePlantVisuals(plantInfo); // Update scale/pos due to growth
             }
 
-            // Check if growth finished *this frame*
             if (plantInfo.growthProgress >= 1.0) {
+                shouldBeRemoved = true; // Finished growing
                 console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] finished growing.`);
-                shouldBeRemoved = true; // Mark for removal, growth is complete
             }
-        } else {
-            // If it was already thirsty when entering the loop (shouldn't happen with new logic, but safe)
+        } else { // Already thirsty
              plantInfo.lastUpdateTime = nowTimestamp; // Keep timestamp fresh
-             shouldBeRemoved = true; // Ensure it's marked for removal if somehow still in the list
+             shouldBeRemoved = true; // Should already be marked, but ensure
         }
 
-        // --- Update Plant Visuals (if needed for growth) ---
-        if (needsVisualUpdate && !shouldBeRemoved) { // Only update if still healthy/growing
-             updatePlantVisuals(plantInfo);
-        }
-
-        // --- Mark for removal if needed ---
-		if (shouldBeRemoved) {
+        if (shouldBeRemoved) {
 			plantsToRemoveFromUpdateList.push(plantInfo);
-			// console.log(`Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] marked for removal from update list (became thirsty or finished growing).`);
         }
-    } // --- End loop over updatablePlants ---
+    } // End loop over updatablePlants
 
-	// --- Remove plants that became idle/thirsty this frame ---
+	// Remove plants that became idle/thirsty
     if (plantsToRemoveFromUpdateList.length > 0) {
-        for (const plantToRemove of plantsToRemoveFromUpdateList) {
-            updatablePlants.delete(plantToRemove);
-        }
+        plantsToRemoveFromUpdateList.forEach(p => updatablePlants.delete(p));
         console.log(`Removed ${plantsToRemoveFromUpdateList.length} plants from update list. New size: ${updatablePlants.size}`);
     }
 
-	// --- Save State (if needed) ---
-    if (needsSave) {
-        debouncedSaveGardenState(); // Use debounced version
+	if (needsSave) {
+        debouncedSaveGardenState();
     }
 
-	// --- Render Scene ---
-    // We always render if this function is called, either by the loop or requestRender
+	// Render Scene
     renderer.render(scene, camera);
 
-    // --- Adjust loop continuation logic ---
-    // Loop continues if EITHER a pointer drag is active OR a tool interaction is marked (though tool interaction is very brief)
-    // Let's simplify: loop continues if isInteracting is true.
-    // isInteracting is set true by pointer down (drag start) and by tool click start.
-    // It's set false by pointer up/cancel (drag end) and tool click end.
-    const shouldContinueLoop = isInteracting; // Keep loop running as long as interaction flag is set
+    // Continue loop only if interacting (dragging item)
+    const shouldContinueLoop = isInteracting;
 
     if (shouldContinueLoop) {
-        // Request the next frame for the continuous loop (during interaction)
         animationFrameId = requestAnimationFrame(renderFrame);
     } else if (isRenderLoopActive) {
-        // Loop was active, but interaction stopped. Stop the loop.
-        // Background interval will take over if non-interacting updates are needed.
-        console.log("Interaction stopped. Stopping continuous render loop.");
-        stopRenderLoop(); // This also cancels any potential pending animationFrameId and restarts background checks
+        // Interaction stopped, transition back to background checks
+        stopRenderLoop();
     }
-    // If !isRenderLoopActive, this was a single requested frame (e.g., from background check),
-    // so we do nothing more. The background check *might* request another frame later if needed.
+    // If !isRenderLoopActive, this was a single requested frame. Do nothing more.
 }
+// --- End renderFrame ---
 
-// --- Core Component Logic ---
-let initComplete = false; // New flag to track if synchronous init is done
+/// --- Core Component Logic (onMount, onDestroy - Adjusted) ---
+let initComplete = false;
 onMount(() => {
 	if (!container) return;
 
-	// --- Subscribe to Pointer Drag Stores ---
+    // --- Store Subscriptions (Keep as is) ---
     const unsubHeldItem = heldItem.subscribe(value => { currentHeldItem = value; });
     const unsubIsDragging = isDraggingItem.subscribe(value => {
         isPointerDragging = value;
         if (isPointerDragging && !isInteracting && initComplete) {
-            // Pointer drag started, ensure interaction state and loop are active
             console.log("Pointer drag detected, starting interaction loop.");
             isInteracting = true;
             startRenderLoop();
-             // Hide tool selection when dragging starts
-            selectedAction.set(null);
+            selectedAction.set(null); // Hide tool selection
         }
-        // Note: The 'stop' logic is handled within handlePointerUpOrCancel now.
+        // Stop handled by pointer up/cancel
     });
-    // --- End Subscription ---
 
 	scene = new THREE.Scene();
-	scene.background = new THREE.Color(0xffffff);
+	scene.background = new THREE.Color(0xc6eafa); // Start with day sky
 
-	camera = new THREE.OrthographicCamera( -1, 1, 1, -1, 1, 1000 );
+	camera = new THREE.OrthographicCamera( -1, 1, 1, -1, 1, 1000 ); // Frustum set in performResize
 	camera.position.set(10, 10, 10);
 	camera.lookAt(0, 0, 0);
 	scene.add(camera);
@@ -1967,310 +1722,222 @@ onMount(() => {
 	renderer.setSize(container.clientWidth, container.clientHeight);
 	renderer.setPixelRatio(window.devicePixelRatio);
 	renderer.shadowMap.enabled = true;
-	// Optional: You can choose softer shadow types (might impact performance)
-	// renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Example: Softer shadows
+    // renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 	container.appendChild(renderer.domElement);
 
-	ambientLight = new THREE.AmbientLight(0xffffff, MAX_AMBIENT_INTENSITY); // Start with day intensity
+    // --- Lights Setup (Keep as is) ---
+	ambientLight = new THREE.AmbientLight(0xffffff, MAX_AMBIENT_INTENSITY);
 	scene.add(ambientLight);
-
-	hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, MAX_HEMISPHERE_INTENSITY); // Start with day intensity
+	hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, MAX_HEMISPHERE_INTENSITY);
 	scene.add(hemisphereLight);
-
 	scene.fog = new THREE.Fog(0xffffff, 25, 50);
-
-	directionalLight = new THREE.DirectionalLight(0xffffff, MAX_DIRECTIONAL_INTENSITY); // Start with day intensity
-	// NOTE: We will override the position dynamically now. Setting an initial reasonable one.
-    directionalLight.position.set(-SUN_DISTANCE * 0.5, SUN_DISTANCE * 0.7, SUN_DISTANCE * 0.3); // Initial position
+	directionalLight = new THREE.DirectionalLight(0xffffff, MAX_DIRECTIONAL_INTENSITY);
+    directionalLight.position.set(-SUN_DISTANCE * 0.5, SUN_DISTANCE * 0.7, SUN_DISTANCE * 0.3);
     directionalLight.castShadow = true;
-	// Configure the shadow camera properties (IMPORTANT!)
-	// This defines the box area the light covers for shadows. Adjust as needed for your scene size.
-	const shadowCamSize = PLANE_SIZE; // How wide/tall the shadow area is (related to PLANE_SIZE)
+	const shadowCamSize = PLANE_SIZE * 1.2; // Slightly larger shadow area
 	directionalLight.shadow.camera.left = -shadowCamSize;
 	directionalLight.shadow.camera.right = shadowCamSize;
 	directionalLight.shadow.camera.top = shadowCamSize;
 	directionalLight.shadow.camera.bottom = -shadowCamSize;
-	directionalLight.shadow.camera.near = 0.5; // How close shadows start from the light source
-	directionalLight.shadow.camera.far = 50; // How far shadows extend
-
-	// Optional: Increase shadow map resolution for sharper shadows (more performance cost)
+	directionalLight.shadow.camera.near = 0.5;
+	directionalLight.shadow.camera.far = SUN_DISTANCE * 2; // Ensure far enough
 	// directionalLight.shadow.mapSize.width = 2048;
 	// directionalLight.shadow.mapSize.height = 2048;
 	scene.add(directionalLight);
+	scene.add(directionalLight.target); // Important to add target if moved
+	// const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera); // Debug
+	// scene.add(shadowHelper);
 
-	// Optional but HIGHLY recommended for debugging shadow camera bounds:
-	// const shadowHelper = new THREE.CameraHelper(directionalLight.shadow.camera);
-	// scene.add(shadowHelper); // Add temporarily to see the shadow box
-
+	// --- Ground and Grid Helper (Keep as is) ---
 	const groundGeometry = new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE);
 	const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x5C946E, side: THREE.DoubleSide });
 	ground = new THREE.Mesh(groundGeometry, groundMaterial);
 	ground.rotation.x = -Math.PI / 2;
 	ground.position.y = -0.01;
-	ground.receiveShadow = true; // The ground will display shadows cast onto it
+	ground.receiveShadow = true;
 	scene.add(ground);
-
 	gridHelper = new THREE.GridHelper(PLANE_SIZE, GRID_DIVISIONS);
+	gridHelper.position.y = 0.01; // Slightly above ground
 	scene.add(gridHelper);
 
-	// --- Preview Bounding Box Setup ---
-	validPlacementMaterial = new THREE.MeshBasicMaterial({
-		color: 0x00ff00, // Green
-		opacity: 0.5,
-		transparent: true,
-		side: THREE.DoubleSide,
-	});
-	invalidPlacementMaterial = new THREE.MeshBasicMaterial({
-		color: 0xff0000, // Red
-		opacity: 0.5,
-		transparent: true,
-		side: THREE.DoubleSide,
-	});
-
+	// --- Preview Bounding Box Setup (Keep as is) ---
+	validPlacementMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, opacity: 0.5, transparent: true, side: THREE.DoubleSide });
+	invalidPlacementMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, opacity: 0.5, transparent: true, side: THREE.DoubleSide });
 	previewGroup = new THREE.Group();
-	previewGroup.visible = false; // Start hidden
+	previewGroup.visible = false;
 	scene.add(previewGroup);
-
-	// Create a pool of preview meshes
-	const previewPlaneGeom = new THREE.PlaneGeometry(CELL_SIZE * 0.95, CELL_SIZE * 0.95); // Slightly smaller than cell
-	previewPlaneGeom.rotateX(-Math.PI / 2); // Rotate to lay flat
-
+	const previewPlaneGeom = new THREE.PlaneGeometry(CELL_SIZE * 0.95, CELL_SIZE * 0.95);
+	previewPlaneGeom.rotateX(-Math.PI / 2);
 	for (let i = 0; i < MAX_PREVIEW_CELLS; i++) {
-		const plane = new THREE.Mesh(previewPlaneGeom, validPlacementMaterial); // Start with valid material
-		plane.visible = false; // Hide individual planes initially
-		plane.position.y = 0.02; // Slightly above the ground
+		const plane = new THREE.Mesh(previewPlaneGeom, validPlacementMaterial);
+		plane.visible = false;
+		plane.position.y = 0.02;
 		previewMeshes.push(plane);
 		previewGroup.add(plane);
 	}
-	// --- End Preview Bounding Box Setup ---
 
+	// --- Event Listeners (Keep as is, uses updated handlers) ---
 	container.addEventListener('pointerdown', handleCanvasPointerDown);
-	// --- Window-Level Pointer Listeners for Dragging ---
-    window.addEventListener('pointermove', handlePointerMove, { passive: false }); // passive: false if preventDefault might be needed
+    window.addEventListener('pointermove', handlePointerMove, { passive: false });
     window.addEventListener('pointerup', handlePointerUpOrCancel);
     window.addEventListener('pointercancel', handlePointerUpOrCancel);
-    // Optional: handle lostpointercapture similarly to pointercancel
     window.addEventListener('lostpointercapture', handlePointerUpOrCancel);
-	// --- End Drag and Drop Setup ---
+	window.addEventListener('resize', resizeHandler);
+	window.addEventListener('beforeunload', handleBeforeUnload);
 
-	const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-		console.log('beforeunload triggered, saving state...');
-		saveGardenState(); // Ensure final save
-	};
-	// --- Other Listeners ---
-	window.addEventListener('resize', resizeHandler); // Use debounced version
-	if (typeof window !== 'undefined') {
-		window.addEventListener('beforeunload', handleBeforeUnload);
-	}
 
-	// --- Call the async function to load assets and finish setup ---
-    // We don't await it here, but chain the rest of the setup using .then()
+	// --- Load Assets and THEN Load Save Data ---
     assetsLoadingPromise = loadAssets().then(() => {
         if (!assetsLoaded) {
              console.error("Asset loading failed. Garden initialization incomplete.");
-             // Display error to user?
-             return; // Stop further setup in this chain
+             return;
         }
-
         console.log("Assets loaded, proceeding with post-load setup...");
 
-        // --- Setup dependent on loaded assets ---
-        setupInstancedMeshes();
+        // REMOVED: setupInstancedMeshes();
 
-        // --- Load saved state (which places objects using instanced meshes) ---
-        const loaded = loadGardenState();
+        // Load saved state AFTER assets are confirmed loaded
+        const loaded = loadGardenState(); // loadGardenState now calls placeGridObjectAt
         if (!loaded) {
-            initializeGrid();
+            initializeGrid(); // Initialize fresh if load fails or no save exists
         }
 
-        // --- Final initializations ---
-        initComplete = true; // Mark initialization as complete
+        // --- Final Initializations ---
+        initComplete = true;
         clock.start();
-        performResize(); // Initial resize
+        performResize(); // Initial resize correctly sets camera frustum
         const initialTime = new Date();
-        updateDayNightCycle(initialTime); // Set initial time visuals
+        updateDayNightCycle(initialTime);
         lastDayNightUpdateMinute = initialTime.getMinutes();
 
-        // Start background intervals AFTER everything is ready
+        // Start background intervals
         if (backgroundCheckIntervalId === undefined) {
              backgroundCheckIntervalId = window.setInterval(performBackgroundCheck, BACKGROUND_UPDATE_INTERVAL_MS);
-             console.log(`Started growth check interval initially (${BACKGROUND_UPDATE_INTERVAL_MS}ms)`);
+             console.log(`Started background check interval (${BACKGROUND_UPDATE_INTERVAL_MS}ms)`);
         }
         if (idleDayNightCheckIntervalId === undefined) {
              idleDayNightCheckIntervalId = window.setInterval(performIdleBackgroundCheck, IDLE_DAYNIGHT_UPDATE_INTERVAL_MS);
-             console.log(`Started idle day/night check interval initially (${IDLE_DAYNIGHT_UPDATE_INTERVAL_MS}ms)`);
+             console.log(`Started idle day/night check interval (${IDLE_DAYNIGHT_UPDATE_INTERVAL_MS}ms)`);
         }
 
-        // --- Initial Render ---
         requestRender(); // Request first frame
-        console.log("Post-load setup complete.");
+        console.log("Garden setup complete.");
 
     }).catch(error => {
         console.error("Error in async setup chain:", error);
-        // Handle error state in UI?
     });
 
-	// --- Return the SYNCHRONOUS cleanup function ---
-    // This function is returned immediately by onMount
+	// --- Return Cleanup Function ---
 	return () => {
-		// The onDestroy Svelte function handles the main cleanup now
-		// This returned function is mostly for things *only* added in onMount
 		console.log("onMount cleanup function running");
-		stopRenderLoop(); // Ensure loop is stopped here too
-		// Remove listeners added *specifically* within onMount if any were left
-		// (most are handled by onDestroy now)
-		// Unsubscribe from stores
+		stopRenderLoop(); // Ensure loop is stopped
+		// Remove listeners added in onMount
         unsubHeldItem();
         unsubIsDragging();
-
-        // Remove listeners added in onMount
+		if (container) container.removeEventListener('pointerdown', handleCanvasPointerDown);
+		window.removeEventListener('pointermove', handlePointerMove);
+		window.removeEventListener('pointerup', handlePointerUpOrCancel);
+		window.removeEventListener('pointercancel', handlePointerUpOrCancel);
+		window.removeEventListener('lostpointercapture', handlePointerUpOrCancel);
         window.removeEventListener('resize', resizeHandler);
-        if (container) { // Check container exists before removing listeners
-            container.removeEventListener('pointerdown', handleCanvasPointerDown);
-        }
-        window.removeEventListener('pointermove', handlePointerMove);
-        window.removeEventListener('pointerup', handlePointerUpOrCancel);
-        window.removeEventListener('pointercancel', handlePointerUpOrCancel);
-        window.removeEventListener('lostpointercapture', handlePointerUpOrCancel);
+		// beforeunload listener removed in onDestroy
 	};
 });
 
-// ... (Keep onDestroy as is, including material/geometry disposal and listener removal) ...
+// --- onDestroy (Adjusted for new cleanup) ---
 onDestroy(() => {
-    // --- Ensure async loading/setup doesn't cause issues on destroy ---
-    // (Optional: Add cancellation logic to loadAssets if possible/needed)
-    initComplete = false; // Mark as not initialized
-    assetsLoaded = false; // Reset flags
+    initComplete = false;
+    assetsLoaded = false;
 
-	stopRenderLoop(); // Explicitly stop the loop on destroy
-	if (typeof window !== 'undefined') {
-        window.removeEventListener('beforeunload', handleBeforeUnload);
-    }
+	stopRenderLoop();
+	window.removeEventListener('beforeunload', handleBeforeUnload);
     console.log('onDestroy triggered, flushing pending save...');
-    debouncedSaveGardenState.flush(); // Force immediate execution
+    debouncedSaveGardenState.flush(); // Force final save
 
 	// Clear intervals
-    if (backgroundCheckIntervalId !== undefined) {
-        clearInterval(backgroundCheckIntervalId);
-        console.log("Stopped growth check interval.");
-    }
-     if (idleDayNightCheckIntervalId !== undefined) { // Clear idle check too
-        clearInterval(idleDayNightCheckIntervalId);
-        console.log("Stopped idle day/night check interval.");
-    }
+    if (backgroundCheckIntervalId !== undefined) clearInterval(backgroundCheckIntervalId);
+    if (idleDayNightCheckIntervalId !== undefined) clearInterval(idleDayNightCheckIntervalId);
+    if (animationFrameId !== undefined) cancelAnimationFrame(animationFrameId);
+	if (clock.running) clock.stop();
 
-	if (animationFrameId !== undefined){
-		cancelAnimationFrame(animationFrameId);
-	}
-	if(clock.running) clock.stop();
-
-	if (renderer) {
-		renderer.dispose();
-		if (renderer.domElement.parentNode) {
-			renderer.domElement.parentNode.removeChild(renderer.domElement);
-		}
-	}
-
-	// Dispose shared resources explicitly
-	ground?.geometry?.dispose();
-	if(ground?.material) {
-		if (Array.isArray(ground.material)) ground.material.forEach(m => m.dispose());
-		else ground.material.dispose();
-	}
-	gridHelper?.geometry?.dispose();
-	if(gridHelper?.material) {
-		if (Array.isArray(gridHelper.material)) gridHelper.material.forEach(m => m.dispose());
-		else gridHelper.material.dispose();
-	}
-	healthyMaterial.dispose(); // Dispose tinting materials
-	thirstyMaterial.dispose();
-	validPlacementMaterial?.dispose(); // Preview material
-	invalidPlacementMaterial?.dispose(); // Preview material
-	previewMeshes[0]?.geometry?.dispose(); // Preview geometry
-
-	// *** Dispose Instanced Meshes and their UNIQUE Geometries/Materials ***
-    console.log("Disposing Instanced Meshes and associated assets...");
-    for (const typeId in instancedMeshes) {
-        const mesh = instancedMeshes[typeId];
-        if (mesh) {
-            // Dispose the UNIQUE geometry CLONE used by this InstancedMesh
-            // Check if it has the instance color attribute we added - means it's the unique clone
-            if (mesh.geometry && mesh.geometry.getAttribute('color')) {
-                 console.log(`Disposing unique geometry clone for InstancedMesh: ${typeId}`);
-                 mesh.geometry.dispose();
-            } else if (mesh.geometry) {
-                 // If geometry doesn't have 'color', it might be shared (e.g., decor not cloned)
-                 // or something went wrong. Only dispose if we know it's unique.
-                 console.warn(`Geometry for InstancedMesh ${typeId} seems shared or missing attribute, not disposing.`);
-            }
-
-            // Dispose the UNIQUE material CLONE used by this InstancedMesh
-             if (Array.isArray(mesh.material)) {
-                mesh.material.forEach(m => {
-                    if (m instanceof THREE.Material && m.vertexColors) { // Check if it's the cloned one
-                        console.log(`Disposing unique material clone (array item) for InstancedMesh: ${typeId}`);
-                        m.dispose();
-                    }
-                });
-            } else if (mesh.material instanceof THREE.Material) {
-                // Check if it's the cloned one (e.g., has vertexColors enabled by our setup)
-                 if (mesh.material.vertexColors) {
-                    console.log(`Disposing unique material clone for InstancedMesh: ${typeId}`);
-                    mesh.material.dispose();
-                 } else {
-                     console.warn(`Material for InstancedMesh ${typeId} seems shared, not disposing.`);
-                 }
-            }
-        }
-    }
-    // --- Dispose CACHED GLTF data (original scenes, geometries, materials) ---
-    console.log("Disposing cached GLTF assets...");
-    for (const modelPath in gltfCache) {
-        const cacheEntry = gltfCache[modelPath];
-        if (cacheEntry) {
-            // Dispose extracted geometry/material IF they weren't cloned/managed above
-            // It's safer to assume the InstancedMesh disposal handled the clones.
-            // We might need to dispose the ORIGINAL geometry/material from the loaded scene IF they weren't used/cloned.
-            // Let's focus on disposing things we know we created/cloned.
-            // The base THREE.Scene (`cacheEntry.scene`) doesn't need explicit disposal,
-            // but its children's geometries/materials might if not handled elsewhere.
-            // Given our cloning strategy, the main cached geo/mat might not need disposal here.
-
-            // Clear textures from original materials in the scene graph
-            cacheEntry.scene.traverse(child => {
-                 if (child instanceof THREE.Mesh && child.material) {
+	// --- Dispose ALL individually placed objects ---
+    console.log("Disposing individual garden objects...");
+    const disposeObject = (obj: THREE.Object3D) => {
+        obj.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+                child.geometry?.dispose();
+                if (child.material) {
                     const materials = Array.isArray(child.material) ? child.material : [child.material];
                     materials.forEach(mat => {
-                        Object.values(mat).forEach((value: any) => {
-                             if (value instanceof THREE.Texture) {
-                                // console.log(`Disposing texture found in cached GLTF scene: ${modelPath}`);
-                                value.dispose();
-                             }
+                        Object.keys(mat).forEach(key => { // Dispose textures
+                            const value = mat[key as keyof THREE.Material];
+                            if (value instanceof THREE.Texture) value.dispose();
                         });
-                         // Dispose the material itself if it wasn't cloned and used by instancing
-                         // This is tricky - maybe track original materials separately?
-                         // For now, rely on instancing disposal for used materials.
+                        mat.dispose();
                     });
-                 }
-                 // Dispose original geometry if it wasn't cloned and used
-                 // if (child instanceof THREE.Mesh && child.geometry && ...) {
-                 //    child.geometry.dispose();
-                 // }
-            });
-        }
-        delete gltfCache[modelPath]; // Remove entry from cache
-    }
-    console.log("Cleared GLTF Cache.");
+                }
+            }
+        });
+         console.log(`   Disposed object ${obj.userData.typeId}`);
+    };
 
-	// --- Clear Internal State ---
-    gardenGrid = []; // Clear grid array
+    allPlants.forEach(p => { if (p.object3D) disposeObject(p.object3D); });
+    allDecor.forEach(d => { if (d.object3D) disposeObject(d.object3D); });
     allPlants.clear();
     allDecor.clear();
     updatablePlants.clear();
-    instancedMeshes = {}; // Clear mesh references
-    instanceIdToDataMap.clear(); // Clear lookup map
-    assetsLoaded = false; // Reset flag
-    // Clear other state variables if necessary
+
+    // --- Dispose Shared Scene Assets ---
+    console.log("Disposing shared scene assets...");
+	ground?.geometry?.dispose();
+	if(ground?.material) (Array.isArray(ground.material) ? ground.material : [ground.material]).forEach(m => m.dispose());
+	gridHelper?.geometry?.dispose();
+	if(gridHelper?.material) (Array.isArray(gridHelper.material) ? gridHelper.material : [gridHelper.material]).forEach(m => m.dispose());
+	validPlacementMaterial?.dispose();
+	invalidPlacementMaterial?.dispose();
+	previewMeshes[0]?.geometry?.dispose(); // Dispose shared preview geometry
+    placeholderGeometry?.dispose(); // Dispose placeholder geometry
+    placeholderMaterial?.dispose(); // Dispose placeholder material
+
+	// --- Dispose Lights / Fog (usually not strictly needed, but good practice)
+    // Lights don't have geometry/material, fog doesn't need explicit disposal
+    // --- Remove Instanced Mesh Disposal ---
+    // console.log("Disposing Instanced Meshes and associated assets..."); // REMOVED SECTION
+
+    // --- Dispose CACHED GLTF data (Original Scenes) ---
+    console.log("Disposing cached GLTF original assets...");
+    for (const modelPath in gltfCache) {
+        const cacheEntry = gltfCache[modelPath];
+        if (cacheEntry && cacheEntry.scene) {
+             // Traverse the ORIGINAL scene to dispose materials/geometries
+             // that were NOT cloned (though our current logic clones everything placed)
+             // This is more of a safety net for the original loaded data.
+            cacheEntry.scene.traverse(child => {
+                 if (child instanceof THREE.Mesh) {
+                    // Only dispose if geometry/material haven't already been disposed
+                    // (e.g., if the original mesh itself was somehow added/removed directly)
+                    // This is tricky, rely primarily on the disposal of the clones above.
+                    // We risk double-disposing if not careful.
+                    // Let's just clear the cache reference. The objects themselves should
+                    // be garbage collected if not referenced elsewhere.
+                 }
+            });
+        }
+        delete gltfCache[modelPath];
+    }
+    console.log("Cleared GLTF Cache.");
+
+    // --- Dispose Renderer ---
+	if (renderer) {
+		renderer.dispose();
+		if (renderer.domElement?.parentNode) {
+			renderer.domElement.parentNode.removeChild(renderer.domElement);
+		}
+        console.log("Disposed renderer.");
+	}
+
+    // --- Clear Internal State ---
+    gardenGrid = [];
 
 	console.log("Garden cleanup complete.");
 });
