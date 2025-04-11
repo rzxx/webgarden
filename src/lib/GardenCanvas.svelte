@@ -5,6 +5,7 @@ import { MathUtils } from 'three'; // For mapLinear and lerp
 import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo } from './stores';
 import { get } from 'svelte/store';
 import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
+import { DRACOLoader } from 'three-stdlib';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // Import SkeletonUtils for cloning
 
 // --- Plant Configuration ---
@@ -173,6 +174,9 @@ type SerializableGardenGrid = SerializableGridCell[][];
 // --- Asset Loading (Cache structure simplified slightly) ---
 const loadingManager = new THREE.LoadingManager();
 const gltfLoader = new GLTFLoader(loadingManager);
+const dracoLoader = new DRACOLoader(loadingManager);
+dracoLoader.setDecoderPath( 'https://www.gstatic.com/draco/versioned/decoders/1.5.7/' );
+gltfLoader.setDRACOLoader(dracoLoader);
 
 // Update the interface slightly if you want the name change reflected (optional)
 interface CachedGltfData {
