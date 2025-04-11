@@ -32,7 +32,7 @@ const plantConfigs: Record<string, PlantConfig> = {
     fern: {
         growthRatePerSecond: 1 / (60 * 1), // Faster for testing
         initialScale: 0.2, // Overall start scale
-        maxScale: 1.0,     // Overall end scale
+        maxScale: 1,     // Overall end scale
         thirstThresholdSeconds: 60 * 1,
         size: { rows: 1, cols: 1 },
         healthyColorTint: new THREE.Color(0xffffff),
@@ -45,7 +45,7 @@ const plantConfigs: Record<string, PlantConfig> = {
     cactus: {
         growthRatePerSecond: 1 / (60 * 5),
         initialScale: 0.2,
-        maxScale: 0.8,
+        maxScale: 1,
         thirstThresholdSeconds: 60 * 10,
         size: { rows: 1, cols: 1 },
         healthyColorTint: new THREE.Color(0xffffff),
@@ -58,7 +58,7 @@ const plantConfigs: Record<string, PlantConfig> = {
     bush: { // Example: Bush might skip a stage
         growthRatePerSecond: 1 / (60 * 3),
         initialScale: 0.1,
-        maxScale: 2.0,
+        maxScale: 1,
         thirstThresholdSeconds: 60 * 8,
         size: { rows: 2, cols: 2 },
         healthyColorTint: new THREE.Color(0xffffff),
@@ -174,10 +174,13 @@ type SerializableGardenGrid = SerializableGridCell[][];
 const loadingManager = new THREE.LoadingManager();
 const gltfLoader = new GLTFLoader(loadingManager);
 
+// Update the interface slightly if you want the name change reflected (optional)
 interface CachedGltfData {
-    scene: THREE.Group; // The *original* loaded scene (to be cloned)
-    baseScale: number; // Scale factor to normalize model size to roughly 1 cell unit (or specified base size)
-    centerOffsetY: number; // Offset to place model base at y=0
+    scene: THREE.Group;
+    baseScale: number; // This is now the scale to make the model 'unit size' (max dim = 1.0)
+    centerOffsetX: number;
+    centerOffsetY: number;
+    centerOffsetZ: number;
 }
 const gltfCache: Record<string, CachedGltfData> = {};
 let assetsLoaded = false;
@@ -405,9 +408,9 @@ function calculateSegmentProgress(cycleProgress: number, startPoint: number, end
     return Math.max(0, Math.min(1, progressInSegment / segmentDuration));
 }
 
-// --- Helper: Extract Geometry/Material and Calculate Scale from GLTF (Improved Centering) ---
-function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = CELL_SIZE): CachedGltfData | null {
-    let baseScale = 1.0;
+/// --- Helper: Extract Geometry/Material and Calculate Scale from GLTF (Improved Centering & Normalization) ---
+function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 1.0): CachedGltfData | null { // Default targetSize = 1.0
+    let modelNormalizationScale = 1.0; // Renamed for clarity
     let centerOffsetX = 0;
     let centerOffsetY = 0;
     let centerOffsetZ = 0;
@@ -430,24 +433,23 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
         const maxDim = Math.max(size.x, size.y, size.z);
 
         if (maxDim > 0) {
-            baseScale = targetSize / maxDim;
+            // Calculate scale needed to make the largest dimension equal to targetSize (now 1.0)
+            modelNormalizationScale = targetSize / maxDim;
         } else {
-            baseScale = 1.0; // Avoid division by zero
+            modelNormalizationScale = 1.0; // Avoid division by zero
         }
 
         // Calculate offsets needed to move the *center* of the bounding box
-        // to (0, min.y, 0) *before* scaling.
-        // Offset Y aims to place the bottom of the box at y=0 after scaling.
-        centerOffsetY = -box.min.y; // Offset needed before scaling
-        // Offset X/Z aims to place the center of the box at x=0, z=0 before scaling.
-        centerOffsetX = -center.x;
-        centerOffsetZ = -center.z;
+        // to (0, min.y, 0) *before* scaling. These are relative to the original model size.
+        centerOffsetY = -box.min.y; // Offset needed before scaling to put base at y=0
+        centerOffsetX = -center.x;   // Offset needed before scaling to put center at x=0
+        centerOffsetZ = -center.z;   // Offset needed before scaling to put center at z=0
 
-        console.log(`GLTF Prep: Path=${gltfScene.userData.path || 'N/A'}`); // Add path if you store it
+        console.log(`GLTF Prep: Path=${gltfScene.userData.path || 'N/A'}`);
         console.log(`  Orig Size=(${size.x.toFixed(2)}, ${size.y.toFixed(2)}, ${size.z.toFixed(2)})`);
         console.log(`  Orig BoxMin=(${box.min.x.toFixed(2)}, ${box.min.y.toFixed(2)}, ${box.min.z.toFixed(2)})`);
         console.log(`  Orig BoxCenter=(${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
-        console.log(`  MaxDim=${maxDim.toFixed(2)}, BaseScale=${baseScale.toFixed(2)}`);
+        console.log(`  MaxDim=${maxDim.toFixed(2)}, TargetSize=${targetSize.toFixed(2)}, ModelNormScale=${modelNormalizationScale.toFixed(4)}`); // Log new scale name
         console.log(`  Pre-Scale Offsets: dX=${centerOffsetX.toFixed(2)}, dY=${centerOffsetY.toFixed(2)}, dZ=${centerOffsetZ.toFixed(2)}`);
     }
      // --- End Bounding Box Calculation ---
@@ -460,7 +462,14 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
         }
     });
 
-    return { scene: gltfScene, baseScale, centerOffsetX, centerOffsetY, centerOffsetZ };
+    // Return the calculated data, using the new name for baseScale
+    return {
+        scene: gltfScene,
+        baseScale: modelNormalizationScale, // Storing the normalization scale here
+        centerOffsetX,
+        centerOffsetY,
+        centerOffsetZ
+     };
 }
 // --- End Helper ---
 
@@ -624,64 +633,77 @@ function initializeGrid() {
 * Uses the model defined by the current growth stage.
 */
 function updatePlantVisuals(plantInfo: PlantInfo) {
+    const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+
     // --- Determine Current Stage and Model ---
     const currentStage = getGrowthStageConfig(plantInfo);
     if (!currentStage || !currentStage.modelPath) {
-        console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Could not determine growth stage or model path.`);
+        // console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Could not determine growth stage or model path.`); // Less noisy log
+        // Make object invisible if stage is invalid?
+        if (plantInfo.object3D) plantInfo.object3D.visible = false;
         return;
     }
     if (!plantInfo.object3D) {
-        console.warn(`Cannot update visuals for plant at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]: Missing object3D (maybe after failed swap?).`);
+        // console.warn(`Cannot update visuals for plant at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]: Missing object3D.`); // Less noisy log
         return;
     }
+
     // --- Get Cached Data for the CURRENT Model ---
     const cachedGltfData = gltfCache[currentStage.modelPath];
     if (!cachedGltfData) {
-        console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Missing cached GLTF data for current stage model ${currentStage.modelPath}.`);
-        // Optionally: hide the object or show a placeholder visual
-        // plantInfo.object3D.visible = false;
+        console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Missing cached GLTF data for current stage model ${currentStage.modelPath}. Hiding object.`);
+        plantInfo.object3D.visible = false; // Hide if cache is missing
         return;
     }
-    // Ensure visibility if it was hidden due to missing cache previously
-    // plantInfo.object3D.visible = true;
+    plantInfo.object3D.visible = true; // Ensure visible if cache was found
 
 
-	const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+    // --- 1. Calculate Transformation ---
 
-	// --- 1. Calculate Transformation ---
-    // Scale calculation now uses the OVERALL initial/max scale from the main config,
-    // lerped by the current growth progress. The model itself changes, but the
-    // scaling factor applies consistently across the 0.0 to 1.0 range.
-	const growthScaleFactor = MathUtils.lerp(config.initialScale, config.maxScale, plantInfo.growthProgress);
-    // Base scale comes from the *cached data of the currently active model*
-    const finalScale = cachedGltfData.baseScale * growthScaleFactor;
+    // Calculate the desired *overall visual scale multiplier* based on growth progress,
+    // relative to the CELL_SIZE.
+    const currentOverallMultiplier = MathUtils.lerp(config.initialScale, config.maxScale, plantInfo.growthProgress);
 
-	const worldPosCenter = gridAreaCenterToWorld(plantInfo.gridPos.row, plantInfo.gridPos.col, plantInfo.size.rows, plantInfo.size.cols);
+    // Calculate the target world size based on the multiplier and cell size.
+    // For multi-cell plants, using CELL_SIZE as the base unit for the multiplier might still be okay,
+    // as the overall placement is centered correctly. Alternatively, you could use
+    // CELL_SIZE * Math.max(config.size.rows, config.size.cols) if you want the multiplier
+    // relative to the plant's full footprint. Let's stick with CELL_SIZE for now.
+    const targetVisualSize = currentOverallMultiplier * CELL_SIZE * Math.max(config.size.rows, config.size.cols);
 
-    // Apply the pre-calculated offsets *from the current model's cached data*, scaled appropriately
+    // Get the normalization scale for the *current model* (makes its max dim = 1.0)
+    const modelNormalizationScale = cachedGltfData.baseScale;
+
+    // The final scale combines the model's normalization with the desired visual size
+    const finalScale = modelNormalizationScale * targetVisualSize;
+
+    // Calculate world position for the center of the plant's grid area
+    const worldPosCenter = gridAreaCenterToWorld(plantInfo.gridPos.row, plantInfo.gridPos.col, plantInfo.size.rows, plantInfo.size.cols);
+
+    // Apply the pre-calculated centering offsets *from the current model's cached data*.
+    // IMPORTANT: These offsets were calculated for the *unscaled* model.
+    // We need to multiply them by the *finalScale* to apply them correctly to the scaled object.
     const offsetX = cachedGltfData.centerOffsetX * finalScale;
-    const offsetY = cachedGltfData.centerOffsetY * finalScale;
+    const offsetY = cachedGltfData.centerOffsetY * finalScale; // This places the calculated base (min.y) at y=0
     const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
 
-	plantInfo.object3D.position.set(
+    plantInfo.object3D.position.set(
         worldPosCenter.x + offsetX,
-        worldPosCenter.y + offsetY,
+        worldPosCenter.y + offsetY, // Apply the scaled Y offset
         worldPosCenter.z + offsetZ
     );
-	plantInfo.object3D.scale.set(finalScale, finalScale, finalScale);
-	// plantInfo.object3D.rotation.set(0, 0, 0); // Keep existing rotation (usually (0,0,0) for plants)
+    plantInfo.object3D.scale.set(finalScale, finalScale, finalScale);
+    // plantInfo.object3D.rotation.set(0, 0, 0); // Keep existing rotation
 
-	// --- 2. Update Material Color (Tinting) ---
-    // This logic relies on plantInfo.originalMaterialColors being correctly rebuilt
-    // *after* a model swap, referencing the materials of the *current* object3D.
+    // --- 2. Update Material Color (Tinting) ---
+    // (Keep the existing, corrected tinting logic using unique materials)
     const targetColor = plantInfo.state === 'needs_water'
         ? (config.thirstyColorTint ?? new THREE.Color(0xaaaaaa))
         : (config.healthyColorTint ?? new THREE.Color(0xffffff));
 
-    // Ensure the map exists before trying to use it
     if (!plantInfo.originalMaterialColors) {
         console.warn(`Plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] missing originalMaterialColors map for tinting. Rebuilding...`);
-        rebuildOriginalMaterialColors(plantInfo); // Attempt to rebuild it now
+        rebuildOriginalMaterialColors(plantInfo);
         if (!plantInfo.originalMaterialColors) {
              console.error(`   Failed to rebuild originalMaterialColors. Tinting skipped.`);
              return; // Skip tinting if rebuild failed
@@ -692,22 +714,15 @@ function updatePlantVisuals(plantInfo: PlantInfo) {
         if (child instanceof THREE.Mesh && child.material) {
             const materials = Array.isArray(child.material) ? child.material : [child.material];
             materials.forEach((mat) => {
-                 // Check if it's one of the materials we stored *for the current object*
                 if (plantInfo.originalMaterialColors!.has(mat) && (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
                     const originalColor = plantInfo.originalMaterialColors!.get(mat)!;
-                    tempColor.copy(originalColor).multiply(targetColor); // Apply tint relative to original
-                    // Only update if the color actually changed to avoid unnecessary work
+                    tempColor.copy(originalColor).multiply(targetColor);
                     if (!mat.color.equals(tempColor)) {
-                        mat.color.copy(tempColor);
-                        mat.needsUpdate = true; // Sometimes needed, especially if renderer optimizes
+                         mat.color.copy(tempColor);
+                         mat.needsUpdate = true;
                     }
                 } else if ((mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
-                    // Material exists but wasn't in our map. This could happen if rebuild failed or map is out of sync.
-                    // Log a warning, maybe try a fallback tint, but avoid storing it now.
-                    console.warn(`Material on ${plantInfo.plantTypeId} not found in originalMaterialColors map. Tinting may be inaccurate.`);
-                    // Fallback: tint based on current color (less ideal, can drift)
-                    // tempColor.copy(mat.color).multiplyScalar(0.9).lerp(targetColor, 0.5);
-                    // mat.color.copy(tempColor);
+                     // console.warn(`Material on ${plantInfo.plantTypeId} not found in originalMaterialColors map during tinting.`); // Less noisy
                 }
             });
         }
@@ -722,12 +737,34 @@ function updateDecorVisuals(decorInfo: DecorInfo) {
     const config = decorConfigs[decorInfo.decorTypeId];
     if (!config) return;
     const cachedGltfData = gltfCache[config.modelPath];
-     if (!cachedGltfData) return;
+    if (!cachedGltfData) {
+        console.warn(`Cannot update visuals for decor ${decorInfo.decorTypeId}: Missing cached GLTF data for model ${config.modelPath}. Hiding object.`);
+        if (decorInfo.object3D) decorInfo.object3D.visible = false;
+        return;
+    }
+    if (decorInfo.object3D) decorInfo.object3D.visible = true;
 
+    // --- 1. Calculate Transformation ---
+
+    // Get the desired relative scale multiplier from decor config
+    const baseMultiplier = config.baseScale ?? 1.0;
+
+    // Calculate the base world size of the decor's grid footprint using the instance's size
+    const baseOccupancyWorldSize = Math.max(decorInfo.size.rows, decorInfo.size.cols) * CELL_SIZE;
+
+    // Calculate the target absolute world size based on multiplier and footprint
+    const targetVisualSize = baseMultiplier * baseOccupancyWorldSize;
+
+    // Get the model's normalization scale (makes its max dim = 1.0)
+    const modelNormalizationScale = cachedGltfData.baseScale;
+
+    // Calculate the final scale: model norm scale * target absolute world size
+    const finalScale = modelNormalizationScale * targetVisualSize;
+
+    // Calculate world position for the center of the decor's grid area
     const worldPosCenter = gridAreaCenterToWorld(decorInfo.gridPos.row, decorInfo.gridPos.col, decorInfo.size.rows, decorInfo.size.cols);
-    const baseObjectScale = config.baseScale ?? 1.0;
-    const finalScale = cachedGltfData.baseScale * baseObjectScale;
 
+    // Apply the pre-calculated centering offsets *multiplied by the finalScale*
     const offsetX = cachedGltfData.centerOffsetX * finalScale;
     const offsetY = cachedGltfData.centerOffsetY * finalScale;
     const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
@@ -739,7 +776,6 @@ function updateDecorVisuals(decorInfo: DecorInfo) {
     );
     decorInfo.object3D.scale.set(finalScale, finalScale, finalScale);
 	decorInfo.object3D.rotation.set(0, decorInfo.rotationY, 0);
-
 }
 
 // --- Helper to check if area is free ---
@@ -1699,7 +1735,7 @@ async function loadAssets() {
             const loadPromise = new Promise<void>((resolve, reject) => {
                 gltfLoader.load( modelPath, (gltf) => {
                         console.log(`Loaded: ${modelPath}`);
-                        let targetSize = CELL_SIZE; // Default normalization target
+                        let targetSize = 1.0; // Default normalization target
 
                         // --- Use extractAndPrepareGltfData (no changes needed here) ---
                         const preparedData = extractAndPrepareGltfData(gltf.scene, targetSize);
