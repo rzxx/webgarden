@@ -87,29 +87,73 @@ const plantConfigs: Record<string, PlantConfig> = {
 // --- End Plant Configuration ---
 
 // --- Decor Configuration ---
+interface DecorPointLightProps {
+    // Properties for the THREE.PointLight
+    color?: number | string; // Default: 0xffffff
+    intensity?: number;      // Default: 1.0
+    distance?: number;       // Default: 0 (no limit) - Set this! Often crucial for performance.
+    decay?: number;          // Default: 2 (realistic falloff)
+    castShadow?: boolean;    // Default: false (shadows are expensive!)
+    // --- Custom Logic Flags ---
+    activeAtNightOnly?: boolean; // Example: For lamps that turn on at night
+    // Add more properties as needed (e.g., powerCost, flicker settings?)
+}
+
 interface DecorConfig {
     size: { rows: number; cols: number };
-    modelPath: string; // Make modelPath required for decor too
+    modelPath: string;
     defaultRotationY?: number;
-    // Optional: Base scale if different from normalized 1x1 cell size
     baseScale?: number;
+    // NEW: Map Empty names to their light properties
+    pointLightDefinitions?: Record<string, DecorPointLightProps>; // Key: Name of the Empty in the GLTF
 }
 
 const decorConfigs: Record<string, DecorConfig> = {
-    box: { size: { rows: 1, cols: 1 }, modelPath: '/models/box.glb', defaultRotationY: 0, baseScale: 1.0 },
-	boxBig: { size: { rows: 2, cols: 2 }, modelPath: '/models/box_big.glb', defaultRotationY: 0, baseScale: 1.0 }, // Base scale refers to the size *within* its 2x2 area
+    /* box: {
+        size: { rows: 1, cols: 1 },
+        modelPath: '/models/box.glb',
+        defaultRotationY: 0,
+        baseScale: 1.0 },
+	boxBig: {
+        size: { rows: 2, cols: 2 },
+        modelPath: '/models/box_big.glb',
+        defaultRotationY: 0,
+        baseScale: 1.0 }, // Base scale refers to the size *within* its 2x2 area */
+    streetLamp: {
+        size: { rows: 1, cols: 1 }, // Example size
+        modelPath: '/models/street_lamp.glb',
+        defaultRotationY: 0,
+        baseScale: 1.5,
+        pointLightDefinitions: {
+            "PointLight_Lamp": { // Matches the Empty name in street_lamp.glb
+                color: 0xFFE6A7, // Cornsilk (warm white)
+                intensity: 10.0,
+                distance: 12,
+                decay: 2,
+                castShadow: true, // Maybe one lamp casts shadows? Use sparingly!
+                activeAtNightOnly: true // Only on when dark
+            }
+        }
+    }
 };
 // --- End Decor Configuration ---
 
+      
 // --- Decor Instance Data Type (Updated) ---
 interface DecorInfo {
     decorTypeId: string;
     size: { rows: number; cols: number };
     gridPos: { row: number; col: number };
     rotationY: number;
-    object3D: THREE.Group | null; // Reference to the actual Three.js object
+    object3D: THREE.Group | null;
+    // NEW: Store the light instances
+    lightObjects?: THREE.PointLight[];
+    // NEW: Optional mapping if needed for updates (e.g., linking light back to its config name)
+    lightMap?: Map<string, THREE.PointLight>; // Key: Empty name, Value: Light instance
 }
 // --- End Decor Instance Data ---
+
+    
 
 // --- Grid Cell Data Type (Updated) ---
 interface PlantInfo {
@@ -967,14 +1011,55 @@ function stopRenderLoop() {
     }
 }
 
+// --- Helper Function to Update Decor Lights based on Time ---
+function updateDecorLightsForTime(isNight: boolean) {
+    // Determine if it's generally "night" based on cycleProgress or isNight flag
+    // const isNight = (cycleProgress < SUNRISE_START_POINT || cycleProgress >= SUNSET_END_POINT);
+
+    for (const decorInfo of allDecor) {
+        if (!decorInfo.lightMap || decorInfo.lightMap.size === 0) continue; // Skip if no lights
+
+        const config = decorConfigs[decorInfo.decorTypeId];
+        if (!config || !config.pointLightDefinitions) continue; // Skip if config missing
+
+        // Iterate through the lights managed by this decor object
+        for (const [emptyName, light] of decorInfo.lightMap.entries()) {
+            const lightProps = config.pointLightDefinitions[emptyName];
+            if (!lightProps) continue; // Should not happen if map is built correctly
+
+            let targetIntensity = lightProps.intensity ?? 1.0; // Default intensity from config
+            let targetVisible = true;
+
+            // Apply custom logic (e.g., night-only lights)
+            if (lightProps.activeAtNightOnly) {
+                if (!isNight) {
+                    targetVisible = false;
+                    targetIntensity = 0; // Ensure intensity is zero when off
+                }
+                // Keep config intensity if it *is* night
+            }
+
+            // --- Apply the changes ---
+            // Only update if necessary to avoid redundant property sets
+            if (light.intensity !== targetIntensity) {
+                light.intensity = targetIntensity;
+            }
+            if (light.visible !== targetVisible) {
+                light.visible = targetVisible;
+                // If turning shadows on/off dynamically, you might need:
+                // if (lightProps.castShadow) light.castShadow = targetVisible;
+            }
+        }
+    }
+}
+
 // function for Day Night cycle
 // --- Main Update Function ---
 function updateDayNightCycle(currentTime: Date) {
     if (!directionalLight || !ambientLight || !hemisphereLight || !scene) return;
 
-    const now = currentTime || new Date();
-    const currentHour = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
-    const cycleProgress = currentHour / 24;
+    const cycleProgress = (currentTime.getHours() + currentTime.getMinutes() / 60 + currentTime.getSeconds() / 3600) / 24;
+    const isNight = (cycleProgress < SUNRISE_START_POINT || cycleProgress >= SUNSET_END_POINT);
 
     // --- Find Active Color Segment ---
     // Find the *first* segment where the current time is less than the end point.
@@ -1034,6 +1119,9 @@ function updateDayNightCycle(currentTime: Date) {
     if (scene.fog) { // Check if fog exists
          scene.fog.color.copy(currentSkyColor);
     }
+
+    // --- NEW: Update Decor Lights based on time ---
+    updateDecorLightsForTime(isNight); // Pass necessary info
 
     // shadowHelper?.update();
 }
@@ -1149,6 +1237,23 @@ function removeGridObjectAt(row: number, col: number) {
 
     // --- 1. Remove Object3D from Scene and Dispose ---
     if (objectToRemove.object3D) {
+        // --- NEW: Handle Lights BEFORE removing main object ---
+        if (objectType === 'decor') {
+            const decorInfo = objectToRemove as DecorInfo;
+            if (decorInfo.lightObjects && decorInfo.lightObjects.length > 0) {
+                console.log(`   Disposing ${decorInfo.lightObjects.length} associated point lights.`);
+                decorInfo.lightObjects.forEach(light => {
+                    // PointLights don't have geometry/material, but calling dispose is harmless
+                    // and good practice in case future Three.js versions add something.
+                    // light.dispose(); // Technically optional for PointLight
+                    // The light will be removed from the scene when its parent is removed.
+                });
+                decorInfo.lightObjects = []; // Clear the array
+                decorInfo.lightMap?.clear(); // Clear the map
+            }
+        }
+        // --- End Light Handling ---
+
         scene.remove(objectToRemove.object3D);
 
         // Dispose geometry and materials
@@ -1258,7 +1363,7 @@ function rebuildOriginalMaterialColors(plantInfo: PlantInfo) {
     console.log(`   Finished rebuilding. Stored original colors for ${plantInfo.originalMaterialColors.size} unique materials.`);
 }
 
-/// --- Function to Place Grid Object (REWRITTEN - Minor Adjustment for Plants) ---
+/// --- Function to Place Grid Object (REWRITTEN - With Point Light Creation) ---
 function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>) {
     // --- Asset Check ---
     if (!assetsLoaded) {
@@ -1324,10 +1429,10 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     // --- 2. Create PlantInfo / DecorInfo ---
     const now = Date.now();
     let newGridObject: PlantInfo | DecorInfo;
-    const originalMaterialColors = new Map<THREE.Material, THREE.Color>(); // Reset for this new object
 
     if (objectType === 'plant') {
         const plantConfig = config as PlantConfig;
+        const originalMaterialColors = new Map<THREE.Material, THREE.Color>(); // Reset for this new object
         const newPlant: PlantInfo = {
             plantTypeId: typeId,
             state: 'healthy',
@@ -1343,18 +1448,21 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         newGridObject = newPlant;
         allPlants.add(newPlant);
         if (newPlant.state === 'healthy' && newPlant.growthProgress < 1.0) {
-             updatablePlants.add(newPlant);
+            updatablePlants.add(newPlant);
         }
     } else { // objectType === 'decor'
         const decorConfig = config as DecorConfig;
-        const rotationY = (initialState as DecorInfo)?.rotationY ?? decorConfig.defaultRotationY ?? 0;
+        const loadedState = initialState as Partial<DecorInfo>; // Cast for easier access
+        const rotationY = loadedState?.rotationY ?? decorConfig.defaultRotationY ?? 0;
         const newDecor: DecorInfo = {
             decorTypeId: typeId,
             size: { ...objectSize },
             gridPos: { row, col },
             rotationY: rotationY,
             object3D: clonedObject as THREE.Group,
-            ...(initialState as Partial<DecorInfo>) // Apply loaded state
+            // Initialize light arrays/maps
+            lightObjects: [], // Ensure it's always a fresh array
+            lightMap: new Map<string, THREE.PointLight>(), // Ensure it's always a fresh Map
         };
         newGridObject = newDecor;
         allDecor.add(newDecor);
@@ -1380,25 +1488,72 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     }
 
     // --- 4. Set Initial Transform and State (Color, Scale, Rotation etc.) ---
-    // Need to rebuild originalMaterialColors *before* applying initial tint/transform
     if (objectType === 'plant') {
-        rebuildOriginalMaterialColors(newGridObject as PlantInfo); // Rebuild map for the *newly cloned* object
-    }
-
-    // Call updatePlantVisuals or updateDecorVisuals (if you make one)
-    // updatePlantVisuals already handles scale, position, and tint based on current state
-    if (objectType === 'plant') {
+        rebuildOriginalMaterialColors(newGridObject as PlantInfo);
         updatePlantVisuals(newGridObject as PlantInfo);
     } else {
-        // Similar logic for decor (scale, position, rotation) - can reuse parts of updatePlantVisuals or make a separate func
-        updateDecorVisuals(newGridObject as DecorInfo); // Assume this function exists or integrate here
+        updateDecorVisuals(newGridObject as DecorInfo);
     }
 
     // --- 5. Add to Scene ---
     scene.add(clonedObject);
     console.log(`Placed ${objectType} ${typeId} (Model: ${modelPath}) at [${row}, ${col}]`);
 
-    // --- 6. Save and Render ---
+    // --- 6. *** NEW: Create and Place Point Lights (for Decor only) *** ---
+    if (objectType === 'decor') {
+        const decorInfo = newGridObject as DecorInfo;
+        const decorConfig = config as DecorConfig;
+
+        if (decorInfo.object3D && decorConfig.pointLightDefinitions) {
+            console.log(`   Searching for light sources in ${typeId}...`);
+            const lightsToAdd: THREE.PointLight[] = []; // Collect lights before adding
+
+            decorInfo.object3D.traverse((node) => {
+                // Check if the node's name is a key in our light definitions
+                if (node.isObject3D && decorConfig.pointLightDefinitions![node.name]) {
+                    const lightProps = decorConfig.pointLightDefinitions![node.name];
+                    console.log(`   Found light source Empty: "${node.name}"`);
+
+                    // Create the PointLight using config properties
+                    const light = new THREE.PointLight(
+                        lightProps.color ?? 0xffffff,
+                        lightProps.intensity ?? 1.0,
+                        lightProps.distance ?? 0,
+                        lightProps.decay ?? 2
+                    );
+
+                    // --- Positioning Strategy ---
+                    // Add the light as a child of the *found Empty node*.
+                    // This ensures the light inherits the Empty's exact transformation
+                    // relative to the parent decor object.
+                    node.add(light); // Add light as child of the Empty
+
+                    // Configure shadows (use sparingly!)
+                    if (lightProps.castShadow) {
+                        light.castShadow = true;
+                        // You might need to configure shadow map size, bias etc. here
+                        // light.shadow.mapSize.width = 512;
+                        // light.shadow.mapSize.height = 512;
+                        // light.shadow.bias = -0.005; // Adjust as needed
+                    }
+
+                    // Store the light instance
+                    if (!decorInfo.lightObjects) decorInfo.lightObjects = []; // Ensure array exists
+                    if (!decorInfo.lightMap) decorInfo.lightMap = new Map(); // Ensure map exists
+                    decorInfo.lightObjects.push(light);
+                    decorInfo.lightMap.set(node.name, light);
+
+                     // Optional: Make the original Empty invisible if it's distracting
+                     // node.visible = false;
+
+                    console.log(`     Created PointLight for "${node.name}"`, lightProps);
+                }
+            });
+        }
+    }
+    // --- End Point Light Creation ---
+
+    // --- 7. Save and Render ---
     if (!initialState) { // Only save/render if NOT loading from save data
         debouncedSaveGardenState();
         requestRender();
@@ -2013,13 +2168,13 @@ function renderFrame() {
     renderer.render(scene, camera);
 
     // --- Manage Render Loop ---
-    const shouldContinueLoop = isInteracting || updatablePlants.size > 0; // Continue if dragging OR plants are still growing
+    const shouldContinueLoop = isInteracting; // Continue if dragging
 
     if (shouldContinueLoop && isRenderLoopActive) {
         // Still active and need to continue
         animationFrameId = requestAnimationFrame(renderFrame);
     } else if (shouldContinueLoop && !isRenderLoopActive) {
-        // Was inactive, but now needs to be active (e.g. plant started growing again)
+        // Was inactive, but now needs to be active
         startRenderLoop(); // This will request the next frame
     }
     else if (!shouldContinueLoop && isRenderLoopActive) {
@@ -2094,9 +2249,19 @@ onMount(() => {
 	ground.position.y = -0.01;
 	ground.receiveShadow = true;
 	scene.add(ground);
-	gridHelper = new THREE.GridHelper(PLANE_SIZE, GRID_DIVISIONS);
+
+    const gridLineColor = new THREE.Color(0x888888);
+    const centerLineColor = new THREE.Color(0x777777);
+
+	gridHelper = new THREE.GridHelper(PLANE_SIZE, GRID_DIVISIONS, centerLineColor, gridLineColor);
 	gridHelper.position.y = 0.01; // Slightly above ground
 	scene.add(gridHelper);
+
+    // --- Make gridhelper transparent ---
+    if (gridHelper.material instanceof THREE.Material) {
+        gridHelper.material.transparent = true;
+        gridHelper.material.opacity = 0.1; // Combine dimmer color with transparency
+    }
 
 	// --- Preview Bounding Box Setup (Keep as is) ---
 	validPlacementMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, opacity: 0.5, transparent: true, side: THREE.DoubleSide });

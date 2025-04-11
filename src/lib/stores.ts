@@ -20,8 +20,7 @@ export const availablePlants = [
 
 // Define available decor (can be expanded later)
 export const availableDecor = [
-    { id: 'box', name: 'Box' },
-    { id: 'boxBig', name: 'Big Box' },
+    { id: 'streetLamp', name: 'Street Lamp' },
     // Add more decor types here
 ];
 
