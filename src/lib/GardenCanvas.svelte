@@ -1104,6 +1104,7 @@ function updateDayNightCycle(currentTime: Date) {
     );
     directionalLight.target.position.set(0, 0, 0);
     directionalLight.target.updateMatrixWorld();
+    directionalLight.castShadow = !isNight;
 
     // --- Calculate Intensities ---
     const intensityFactor = Math.max(0, lightY / SUN_DISTANCE); // Use normalized height (0 to 1)
