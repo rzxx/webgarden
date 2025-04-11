@@ -8,23 +8,80 @@ import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // Import SkeletonUtils for cloning
 
 // --- Plant Configuration ---
-interface PlantConfig {
-	growthRatePerSecond: number;
-	initialScale: number; // Scale factor relative to normalized size
-	maxScale: number; // Scale factor relative to normalized size
-	thirstThresholdSeconds: number;
-	size: { rows: number; cols: number };
+interface GrowthStage {
+    maxGrowth: number; // The progress value *up to which* this stage applies (inclusive)
     modelPath: string;
-    // Optional: Define a base color for tinting if the model is designed for it
+    // Optional: stage-specific scale factors if needed, otherwise use main config
+    // initialScale?: number;
+    // maxScale?: number; // Max scale *for this stage*
+}
+
+interface PlantConfig {
+    growthRatePerSecond: number;
+    initialScale: number; // Overall initial scale (at progress 0)
+    maxScale: number;     // Overall max scale (at progress 1)
+    thirstThresholdSeconds: number;
+    size: { rows: number; cols: number };
+    growthStages: GrowthStage[]; // REQUIRED: Define models for growth phases
     healthyColorTint?: THREE.Color;
     thirstyColorTint?: THREE.Color;
 }
 
+// --- Updated Plant Configs ---
 const plantConfigs: Record<string, PlantConfig> = {
-	fern: { growthRatePerSecond: 1 / (60 * 1), initialScale: 0.3, maxScale: 1.0, thirstThresholdSeconds: 60 * 1, size: { rows: 1, cols: 1 }, modelPath: '/models/fern.glb', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) },
-	cactus: { growthRatePerSecond: 1 / (60 * 5), initialScale: 0.2, maxScale: 0.8, thirstThresholdSeconds: 60 * 10, size: { rows: 1, cols: 1 }, modelPath: '/models/cactus.glb', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) },
-	bush: { growthRatePerSecond: 1 / (60 * 3), initialScale: 0.1, maxScale: 2.0, thirstThresholdSeconds: 60 * 8, size: { rows: 2, cols: 2 }, modelPath: '/models/bush.glb', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) },
-	default: { growthRatePerSecond: 1 / (60 * 2), initialScale: 0.4, maxScale: 1.0, thirstThresholdSeconds: 60 * 5, size: { rows: 1, cols: 1 }, modelPath: '', healthyColorTint: new THREE.Color(0xffffff), thirstyColorTint: new THREE.Color(0xa0a0a0) }
+    fern: {
+        growthRatePerSecond: 1 / (60 * 1), // Faster for testing
+        initialScale: 0.2, // Overall start scale
+        maxScale: 1.0,     // Overall end scale
+        thirstThresholdSeconds: 60 * 1,
+        size: { rows: 1, cols: 1 },
+        healthyColorTint: new THREE.Color(0xffffff),
+        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        growthStages: [
+            { maxGrowth: 0.25, modelPath: '/models/seed.glb' },
+            { maxGrowth: 1.00, modelPath: '/models/fern.glb' }
+        ]
+    },
+    cactus: {
+        growthRatePerSecond: 1 / (60 * 5),
+        initialScale: 0.2,
+        maxScale: 0.8,
+        thirstThresholdSeconds: 60 * 10,
+        size: { rows: 1, cols: 1 },
+        healthyColorTint: new THREE.Color(0xffffff),
+        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        growthStages: [
+            { maxGrowth: 0.50, modelPath: '/models/seed.glb' },
+            { maxGrowth: 1.00, modelPath: '/models/cactus.glb' }
+        ]
+    },
+    bush: { // Example: Bush might skip a stage
+        growthRatePerSecond: 1 / (60 * 3),
+        initialScale: 0.1,
+        maxScale: 2.0,
+        thirstThresholdSeconds: 60 * 8,
+        size: { rows: 2, cols: 2 },
+        healthyColorTint: new THREE.Color(0xffffff),
+        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        growthStages: [
+            { maxGrowth: 0.10, modelPath: '/models/seed.glb' },
+            { maxGrowth: 0.50, modelPath: '/models/bush_early.glb' },
+            { maxGrowth: 0.75, modelPath: '/models/bush_growing.glb' },
+            { maxGrowth: 1.00, modelPath: '/models/bush.glb' }
+        ]
+    },
+    default: { // Add growthStages to default as well
+        growthRatePerSecond: 1 / (60 * 2),
+        initialScale: 0.4,
+        maxScale: 1.0,
+        thirstThresholdSeconds: 60 * 5,
+        size: { rows: 1, cols: 1 },
+        healthyColorTint: new THREE.Color(0xffffff),
+        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        growthStages: [
+             { maxGrowth: 1.00, modelPath: '/models/box.glb' } // Default uses box
+        ]
+    }
 };
 // --- End Plant Configuration ---
 
@@ -407,6 +464,31 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
 }
 // --- End Helper ---
 
+/**
+ * Finds the appropriate growth stage configuration based on the plant's current progress.
+ */
+ function getGrowthStageConfig(plantInfo: PlantInfo): GrowthStage | null {
+    const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+    if (!config.growthStages || config.growthStages.length === 0) {
+        console.error(`Plant type ${plantInfo.plantTypeId} missing growthStages configuration.`);
+        return null;
+    }
+
+    // Ensure stages are sorted by maxGrowth (important!)
+    // Do this once at load time ideally, but for safety check here too or assume pre-sorted
+    const sortedStages = config.growthStages.sort((a, b) => a.maxGrowth - b.maxGrowth);
+
+    // Find the first stage where the plant's progress is less than or equal to the stage's maxGrowth
+    const stage = sortedStages.find(s => plantInfo.growthProgress <= s.maxGrowth);
+
+    if (stage) {
+        return stage;
+    } else {
+        // If progress is somehow > 1.0 or config doesn't cover 1.0, return the last stage
+        console.warn(`Could not find growth stage for progress ${plantInfo.growthProgress.toFixed(2)} for ${plantInfo.plantTypeId}. Using last stage.`);
+        return sortedStages[sortedStages.length - 1];
+    }
+}
 // --- End Utility Functions ---
 
 // --- Coordinate Mapping Functions ---
@@ -463,31 +545,120 @@ function initializeGrid() {
 	console.log("Initialized Grid:", gardenGrid);
 }
 
-/// --- Function to Update Plant Visuals (REWRITTEN for individual objects) ---
 /**
- * Updates the Transform and Material properties for a specific plant's Object3D.
+ * Swaps the 3D model for a plant instance.
+ * Removes the old model, clones the new one, adds it, and updates plantInfo.
+ * Assumes the new modelPath exists in gltfCache.
  */
- function updatePlantVisuals(plantInfo: PlantInfo) {
-	if (!plantInfo.object3D) {
-		console.warn(`Cannot update visuals for plant at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]: Missing object3D`);
-		return;
-	}
-
-	const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
-    const cachedGltfData = gltfCache[config.modelPath]; // Get cached data including offsets
-
-    if (!cachedGltfData) {
-        console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Missing cached GLTF data.`);
-        return;
+ function swapPlantModel(plantInfo: PlantInfo, newModelPath: string): boolean {
+    if (!plantInfo) {
+        console.error("swapPlantModel: Invalid plantInfo provided.");
+        return false;
     }
 
+    const oldObject = plantInfo.object3D;
+    const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+
+    // --- 1. Get New Model Data ---
+    const cachedGltfData = gltfCache[newModelPath];
+    if (!cachedGltfData || !cachedGltfData.scene) {
+        console.error(`swapPlantModel: Cached GLTF scene missing for new model ${newModelPath}. Cannot swap.`);
+        return false;
+    }
+
+    // --- 2. Remove and Dispose Old Model (if exists) ---
+    if (oldObject) {
+        scene.remove(oldObject); // Remove from scene first
+
+        // Dispose geometry and materials of the old object
+        oldObject.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+                child.geometry?.dispose();
+                if (child.material) {
+                    const materials = Array.isArray(child.material) ? child.material : [child.material];
+                    materials.forEach(mat => {
+                        Object.keys(mat).forEach(key => {
+                            const value = mat[key as keyof THREE.Material];
+                            if (value instanceof THREE.Texture) {
+                                value.dispose();
+                            }
+                        });
+                        mat.dispose();
+                    });
+                }
+            }
+        });
+         console.log(`   Disposed old model for ${plantInfo.plantTypeId}`);
+        plantInfo.object3D = null; // Clear reference temporarily
+        plantInfo.originalMaterialColors = undefined; // Clear old color map
+    } else {
+         console.warn(`swapPlantModel: Plant ${plantInfo.plantTypeId} had no existing object3D to remove.`);
+    }
+
+    // --- 3. Clone New Model ---
+    const newObject = SkeletonUtils.clone(cachedGltfData.scene) as THREE.Group;
+    newObject.visible = true; // Ensure visibility
+
+    // --- 4. Update PlantInfo ---
+    plantInfo.object3D = newObject; // Assign new model
+    // Link back userData
+    newObject.userData.gridInfo = plantInfo;
+    newObject.userData.objectType = 'plant';
+    newObject.userData.typeId = plantInfo.plantTypeId;
+
+    // --- 5. Rebuild Material Map & Apply Visuals ---
+    // Rebuild map *before* applying tint in updatePlantVisuals
+    rebuildOriginalMaterialColors(plantInfo);
+    // Update visuals (position, scale, tint) based on current state and *new* model data
+    updatePlantVisuals(plantInfo); // This will use the new object3D and its corresponding cached data
+
+    // --- 6. Add New Model to Scene ---
+    scene.add(newObject);
+    console.log(`   Successfully swapped to model ${newModelPath}`);
+
+    return true; // Success
+}
+
+/**
+* Updates the Transform and Material properties for a specific plant's Object3D.
+* Uses the model defined by the current growth stage.
+*/
+function updatePlantVisuals(plantInfo: PlantInfo) {
+    // --- Determine Current Stage and Model ---
+    const currentStage = getGrowthStageConfig(plantInfo);
+    if (!currentStage || !currentStage.modelPath) {
+        console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Could not determine growth stage or model path.`);
+        return;
+    }
+    if (!plantInfo.object3D) {
+        console.warn(`Cannot update visuals for plant at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]: Missing object3D (maybe after failed swap?).`);
+        return;
+    }
+    // --- Get Cached Data for the CURRENT Model ---
+    const cachedGltfData = gltfCache[currentStage.modelPath];
+    if (!cachedGltfData) {
+        console.warn(`Cannot update visuals for plant ${plantInfo.plantTypeId}: Missing cached GLTF data for current stage model ${currentStage.modelPath}.`);
+        // Optionally: hide the object or show a placeholder visual
+        // plantInfo.object3D.visible = false;
+        return;
+    }
+    // Ensure visibility if it was hidden due to missing cache previously
+    // plantInfo.object3D.visible = true;
+
+
+	const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
+
 	// --- 1. Calculate Transformation ---
+    // Scale calculation now uses the OVERALL initial/max scale from the main config,
+    // lerped by the current growth progress. The model itself changes, but the
+    // scaling factor applies consistently across the 0.0 to 1.0 range.
 	const growthScaleFactor = MathUtils.lerp(config.initialScale, config.maxScale, plantInfo.growthProgress);
-    const finalScale = cachedGltfData.baseScale * growthScaleFactor; // Base scale * growth
+    // Base scale comes from the *cached data of the currently active model*
+    const finalScale = cachedGltfData.baseScale * growthScaleFactor;
 
 	const worldPosCenter = gridAreaCenterToWorld(plantInfo.gridPos.row, plantInfo.gridPos.col, plantInfo.size.rows, plantInfo.size.cols);
 
-    // Apply the pre-calculated offsets, scaled appropriately by the *current* finalScale
+    // Apply the pre-calculated offsets *from the current model's cached data*, scaled appropriately
     const offsetX = cachedGltfData.centerOffsetX * finalScale;
     const offsetY = cachedGltfData.centerOffsetY * finalScale;
     const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
@@ -498,38 +669,78 @@ function initializeGrid() {
         worldPosCenter.z + offsetZ
     );
 	plantInfo.object3D.scale.set(finalScale, finalScale, finalScale);
-	// plantInfo.object3D.rotation.set(0, 0, 0); // Keep existing rotation
+	// plantInfo.object3D.rotation.set(0, 0, 0); // Keep existing rotation (usually (0,0,0) for plants)
 
-	// --- 2. Update Material Color (Tinting - logic remains the same) ---
+	// --- 2. Update Material Color (Tinting) ---
+    // This logic relies on plantInfo.originalMaterialColors being correctly rebuilt
+    // *after* a model swap, referencing the materials of the *current* object3D.
     const targetColor = plantInfo.state === 'needs_water'
         ? (config.thirstyColorTint ?? new THREE.Color(0xaaaaaa))
         : (config.healthyColorTint ?? new THREE.Color(0xffffff));
 
+    // Ensure the map exists before trying to use it
     if (!plantInfo.originalMaterialColors) {
-        console.warn(`Plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] missing originalMaterialColors map for tinting.`);
+        console.warn(`Plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] missing originalMaterialColors map for tinting. Rebuilding...`);
+        rebuildOriginalMaterialColors(plantInfo); // Attempt to rebuild it now
+        if (!plantInfo.originalMaterialColors) {
+             console.error(`   Failed to rebuild originalMaterialColors. Tinting skipped.`);
+             return; // Skip tinting if rebuild failed
+        }
     }
 
     plantInfo.object3D.traverse((child) => {
         if (child instanceof THREE.Mesh && child.material) {
             const materials = Array.isArray(child.material) ? child.material : [child.material];
             materials.forEach((mat) => {
-                 // Check if it's one of the materials we cloned and stored
-                if (plantInfo.originalMaterialColors?.has(mat) && (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
-                    const originalColor = plantInfo.originalMaterialColors.get(mat)!; // We know it exists
-                    tempColor.copy(originalColor).multiply(targetColor);
-                    mat.color.copy(tempColor);
-                } else if (!plantInfo.originalMaterialColors?.has(mat) && (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
-                     // Fallback: If somehow the material wasn't in the map (e.g. loaded save state from older version?)
-                     // try tinting based on current color, but this drifts.
-                     console.warn(`Material not found in originalMaterialColors map for plant ${plantInfo.plantTypeId}. Tinting may be inaccurate.`);
-                     tempColor.copy(mat.color).multiplyScalar(0.8).lerp(targetColor, 0.5); // Basic fallback tint
-                     mat.color.copy(tempColor);
+                 // Check if it's one of the materials we stored *for the current object*
+                if (plantInfo.originalMaterialColors!.has(mat) && (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
+                    const originalColor = plantInfo.originalMaterialColors!.get(mat)!;
+                    tempColor.copy(originalColor).multiply(targetColor); // Apply tint relative to original
+                    // Only update if the color actually changed to avoid unnecessary work
+                    if (!mat.color.equals(tempColor)) {
+                        mat.color.copy(tempColor);
+                        mat.needsUpdate = true; // Sometimes needed, especially if renderer optimizes
+                    }
+                } else if ((mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
+                    // Material exists but wasn't in our map. This could happen if rebuild failed or map is out of sync.
+                    // Log a warning, maybe try a fallback tint, but avoid storing it now.
+                    console.warn(`Material on ${plantInfo.plantTypeId} not found in originalMaterialColors map. Tinting may be inaccurate.`);
+                    // Fallback: tint based on current color (less ideal, can drift)
+                    // tempColor.copy(mat.color).multiplyScalar(0.9).lerp(targetColor, 0.5);
+                    // mat.color.copy(tempColor);
                 }
             });
         }
     });
 }
 // --- End Function to Update Plant Visuals ---
+
+// --- Placeholder updateDecorVisuals (adapt as needed) ---
+function updateDecorVisuals(decorInfo: DecorInfo) {
+    if (!decorInfo.object3D) return;
+
+    const config = decorConfigs[decorInfo.decorTypeId];
+    if (!config) return;
+    const cachedGltfData = gltfCache[config.modelPath];
+     if (!cachedGltfData) return;
+
+    const worldPosCenter = gridAreaCenterToWorld(decorInfo.gridPos.row, decorInfo.gridPos.col, decorInfo.size.rows, decorInfo.size.cols);
+    const baseObjectScale = config.baseScale ?? 1.0;
+    const finalScale = cachedGltfData.baseScale * baseObjectScale;
+
+    const offsetX = cachedGltfData.centerOffsetX * finalScale;
+    const offsetY = cachedGltfData.centerOffsetY * finalScale;
+    const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
+
+    decorInfo.object3D.position.set(
+        worldPosCenter.x + offsetX,
+        worldPosCenter.y + offsetY,
+        worldPosCenter.z + offsetZ
+    );
+    decorInfo.object3D.scale.set(finalScale, finalScale, finalScale);
+	decorInfo.object3D.rotation.set(0, decorInfo.rotationY, 0);
+
+}
 
 // --- Helper to check if area is free ---
 function isAreaFree(startRow: number, startCol: number, numRows: number, numCols: number): boolean {
@@ -958,7 +1169,56 @@ function removeGridObjectAt(row: number, col: number) {
 }
 // --- End Function to Remove Grid Object ---
 
-/// --- Function to Place Grid Object (REWRITTEN) ---
+// --- Helper to rebuild original material colors AND ensure unique instances ---
+function rebuildOriginalMaterialColors(plantInfo: PlantInfo) {
+    if (!plantInfo.object3D) {
+        console.warn(`Cannot rebuild materials for ${plantInfo.plantTypeId} [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]: object3D is null.`);
+        return;
+    }
+
+    // Create a new map. We are replacing materials, so old references are invalid.
+    plantInfo.originalMaterialColors = new Map<THREE.Material, THREE.Color>();
+
+    console.log(`Rebuilding unique materials for ${plantInfo.plantTypeId} [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]...`);
+
+    plantInfo.object3D.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.material) {
+            const originalMaterials = Array.isArray(child.material) ? child.material : [child.material];
+            const newMaterials: THREE.Material[] = [];
+            let materialsChanged = false;
+
+            originalMaterials.forEach(originalMat => {
+                // Only process standard or basic materials for tinting
+                if (originalMat instanceof THREE.MeshStandardMaterial || originalMat instanceof THREE.MeshBasicMaterial) {
+                    // --- Clone the material to create a unique instance ---
+                    const uniqueMat = originalMat.clone(); // IMPORTANT: Clone the material!
+
+                    // --- Store the ORIGINAL color of this NEW unique instance ---
+                    // We clone the color as well to prevent accidental modifications later
+                    plantInfo.originalMaterialColors!.set(uniqueMat, uniqueMat.color.clone());
+
+                    newMaterials.push(uniqueMat);
+                    materialsChanged = true; // Mark that we've replaced at least one material
+                    // console.log(`   Cloned material for mesh ${child.name || child.uuid}`);
+                } else {
+                    // If it's not a type we modify, keep the original (potentially shared) material
+                    newMaterials.push(originalMat);
+                    // console.log(`   Kept original (non-tintable) material for mesh ${child.name || child.uuid}`);
+                }
+            });
+
+            // --- Assign the new material(s) back to the mesh ---
+            if (materialsChanged) {
+                child.material = Array.isArray(child.material) ? newMaterials : newMaterials[0];
+                 // console.log(`   Assigned ${newMaterials.length} new/original materials to mesh ${child.name || child.uuid}`);
+            }
+        }
+    });
+
+    console.log(`   Finished rebuilding. Stored original colors for ${plantInfo.originalMaterialColors.size} unique materials.`);
+}
+
+/// --- Function to Place Grid Object (REWRITTEN - Minor Adjustment for Plants) ---
 function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>) {
     // --- Asset Check ---
     if (!assetsLoaded) {
@@ -966,52 +1226,79 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         return;
     }
 
-    const config = objectType === 'plant' ? plantConfigs[typeId] : decorConfigs[typeId];
-    if (!config || !config.modelPath) {
-        console.error(`No config or modelPath found for ${objectType} with id ${typeId}`);
-        return;
-    }
-    const cachedGltfData = gltfCache[config.modelPath];
-    if (!cachedGltfData || !cachedGltfData.scene) {
-        console.error(`Cached GLTF scene missing for ${typeId} (${config.modelPath}). Cannot place.`);
-        // Optionally: Create a placeholder object
-        // const placeholder = new THREE.Mesh(placeholderGeometry, placeholderMaterial);
-        // ... add placeholder to scene and store ref ... but requires more logic
-        return;
+    // --- Get Config and Model Path ---
+    let config: PlantConfig | DecorConfig | undefined;
+    let modelPath: string | undefined;
+    let objectSize: { rows: number; cols: number };
+
+    if (objectType === 'plant') {
+        config = plantConfigs[typeId];
+        if (!config) {
+            console.error(`No plant config found for id ${typeId}`); return;
+        }
+        // Determine initial stage based on potential initialState or default 0.0
+        const initialProgress = (initialState as PlantInfo)?.growthProgress ?? 0.0;
+        // Create a temporary PlantInfo-like object just for getting the stage
+        const tempInfo = { plantTypeId: typeId, growthProgress: initialProgress } as PlantInfo;
+        const initialStage = getGrowthStageConfig(tempInfo);
+        if (!initialStage || !initialStage.modelPath) {
+             console.error(`Could not determine initial growth stage or model path for ${typeId} at progress ${initialProgress}.`);
+             return;
+        }
+        modelPath = initialStage.modelPath;
+        objectSize = config.size;
+    } else { // Decor
+        config = decorConfigs[typeId];
+         if (!config) {
+            console.error(`No decor config found for id ${typeId}`); return;
+        }
+        modelPath = config.modelPath;
+        objectSize = config.size;
     }
 
-    const objectSize = config.size;
+    if (!modelPath) { // Should be caught above, but safety check
+        console.error(`No modelPath determined for ${objectType} ${typeId}`); return;
+    }
+
+    const cachedGltfData = gltfCache[modelPath];
+    if (!cachedGltfData || !cachedGltfData.scene) {
+        console.error(`Cached GLTF scene missing for ${typeId} using model ${modelPath}. Cannot place.`);
+        // TODO: Optionally create a placeholder object here
+        return;
+    }
+    // --- End Config/Model Path ---
+
 
 	// --- Check Free Space ---
     if (!isAreaFree(row, col, objectSize.rows, objectSize.cols)) {
         console.log(`Cannot place ${typeId} of size ${objectSize.rows}x${objectSize.cols} at [${row}, ${col}], area not free.`);
-		requestRender(); // Request render to hide preview box if it was shown
+		hidePreviewBox(); // Hide preview if shown
+        if (!isRenderLoopActive) requestRender(); // Ensure preview hide is rendered if needed
         return;
     }
 
     // --- 1. Clone the GLTF Scene ---
-    // Use SkeletonUtils.clone for proper handling of skinned meshes (if any)
     const clonedObject = SkeletonUtils.clone(cachedGltfData.scene);
-    clonedObject.visible = true; // Ensure clone is visible
+    clonedObject.visible = true;
 
     // --- 2. Create PlantInfo / DecorInfo ---
     const now = Date.now();
     let newGridObject: PlantInfo | DecorInfo;
-    const originalMaterialColors = new Map<THREE.Material, THREE.Color>(); // For plant tinting backup
+    const originalMaterialColors = new Map<THREE.Material, THREE.Color>(); // Reset for this new object
 
     if (objectType === 'plant') {
         const plantConfig = config as PlantConfig;
         const newPlant: PlantInfo = {
             plantTypeId: typeId,
             state: 'healthy',
-            growthProgress: 0.0,
+            growthProgress: 0.0, // Default, will be overwritten by initialState if provided
             lastUpdateTime: now,
             lastWateredTime: now,
             size: { ...objectSize },
             gridPos: { row, col },
-            object3D: clonedObject as THREE.Group, // Explicitly cast to THREE.Group
+            object3D: clonedObject as THREE.Group,
             originalMaterialColors: originalMaterialColors,
-            ...(initialState as Partial<PlantInfo>) // Apply loaded state
+            ...(initialState as Partial<PlantInfo>) // Apply loaded state (overwrites defaults)
         };
         newGridObject = newPlant;
         allPlants.add(newPlant);
@@ -1026,19 +1313,20 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
             size: { ...objectSize },
             gridPos: { row, col },
             rotationY: rotationY,
-            object3D: clonedObject as THREE.Group, // Store reference to the clone
+            object3D: clonedObject as THREE.Group,
             ...(initialState as Partial<DecorInfo>) // Apply loaded state
         };
         newGridObject = newDecor;
         allDecor.add(newDecor);
     }
 
-     // --- Store reference from Object3D back to the info ---
+    // --- Store reference from Object3D back to the info ---
     clonedObject.userData.gridInfo = newGridObject;
-    clonedObject.userData.objectType = objectType; // Store type for easier identification if needed
+    clonedObject.userData.objectType = objectType;
     clonedObject.userData.typeId = typeId;
 
     // --- 3. Update Grid & Pointers ---
+    // (Keep existing logic for placing main object and pointers)
     gardenGrid[row][col] = newGridObject;
     for (let rOffset = 0; rOffset < objectSize.rows; rOffset++) {
         for (let cOffset = 0; cOffset < objectSize.cols; cOffset++) {
@@ -1051,77 +1339,30 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         }
     }
 
-    // --- 4. Set Initial Transform and State (Color, etc.) ---
-    const worldPosCenter = gridAreaCenterToWorld(row, col, objectSize.rows, objectSize.cols); // Center of the grid area
-    let currentGrowthScale = 1.0; // Scale based on growth progress
-    let baseObjectScale = 1.0;    // Scale from decor config (if any)
-    let objectRotationY = 0;
-
-    // --- Apply Plant Tinting (if applicable) ---
+    // --- 4. Set Initial Transform and State (Color, Scale, Rotation etc.) ---
+    // Need to rebuild originalMaterialColors *before* applying initial tint/transform
     if (objectType === 'plant') {
-        const plantInfo = newGridObject as PlantInfo;
-        const plantConfig = config as PlantConfig;
-        currentGrowthScale = MathUtils.lerp(plantConfig.initialScale, plantConfig.maxScale, plantInfo.growthProgress);
-        objectRotationY = 0;
-
-        const initialColorTint = plantInfo.state === 'needs_water'
-            ? (plantConfig.thirstyColorTint ?? new THREE.Color(0xaaaaaa))
-            : (plantConfig.healthyColorTint ?? new THREE.Color(0xffffff));
-
-        clonedObject.traverse((child) => {
-             if (child instanceof THREE.Mesh && child.material) {
-                const materials = Array.isArray(child.material) ? child.material : [child.material];
-                // IMPORTANT: Clone materials *before* storing/modifying
-                const clonedMaterials = materials.map(mat => {
-                     if (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial) {
-                        const clonedMat = mat.clone();
-                        originalMaterialColors.set(clonedMat, clonedMat.color.clone()); // Store original of the clone
-                        tempColor.copy(clonedMat.color).multiply(initialColorTint);
-                        clonedMat.color.copy(tempColor);
-                        return clonedMat;
-                    }
-                    return mat; // Return original if not supported type
-                });
-                 // Assign back cloned/modified materials
-                child.material = Array.isArray(child.material) ? clonedMaterials : clonedMaterials[0];
-             }
-        });
-
-    } else { // Decor
-        const decorInfo = newGridObject as DecorInfo;
-        const decorConfig = config as DecorConfig;
-        baseObjectScale = decorConfig.baseScale ?? 1.0;
-        objectRotationY = decorInfo.rotationY;
+        rebuildOriginalMaterialColors(newGridObject as PlantInfo); // Rebuild map for the *newly cloned* object
     }
-    // --- End Tinting ---
 
-    // --- Calculate Final Scale and Position ---
-    const finalScale = cachedGltfData.baseScale * currentGrowthScale * baseObjectScale;
-
-    // Apply the pre-calculated offsets, scaled appropriately
-    const offsetX = cachedGltfData.centerOffsetX * finalScale;
-    const offsetY = cachedGltfData.centerOffsetY * finalScale; // Y offset depends only on Y scale component
-    const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
-
-    // Final position is the grid area center + scaled offsets
-    clonedObject.position.set(
-        worldPosCenter.x + offsetX,
-        worldPosCenter.y + offsetY, // Apply Y offset relative to ground
-        worldPosCenter.z + offsetZ
-    );
-
-	clonedObject.scale.set(finalScale, finalScale, finalScale);
-	clonedObject.rotation.set(0, objectRotationY, 0);
+    // Call updatePlantVisuals or updateDecorVisuals (if you make one)
+    // updatePlantVisuals already handles scale, position, and tint based on current state
+    if (objectType === 'plant') {
+        updatePlantVisuals(newGridObject as PlantInfo);
+    } else {
+        // Similar logic for decor (scale, position, rotation) - can reuse parts of updatePlantVisuals or make a separate func
+        updateDecorVisuals(newGridObject as DecorInfo); // Assume this function exists or integrate here
+    }
 
     // --- 5. Add to Scene ---
     scene.add(clonedObject);
-    console.log(`Placed ${objectType} ${typeId} at [${row}, ${col}] (World Pos: ${clonedObject.position.x.toFixed(2)}, ${clonedObject.position.y.toFixed(2)}, ${clonedObject.position.z.toFixed(2)})`);
+    console.log(`Placed ${objectType} ${typeId} (Model: ${modelPath}) at [${row}, ${col}]`);
 
     // --- 6. Save and Render ---
     if (!initialState) { // Only save/render if NOT loading from save data
-		debouncedSaveGardenState();
-		requestRender();
-	}
+        debouncedSaveGardenState();
+        requestRender();
+    }
 }
 // --- End Function to Place Grid Object ---
 
@@ -1418,49 +1659,63 @@ function handlePointerUpOrCancel(event: PointerEvent) {
 }
 // --- End Pointer Up/Cancel Handler ---
 
-// --- Asset Loading Function (Keep structure, uses new prepare function) ---
+// --- Asset Loading Function (Modified) ---
 async function loadAssets() {
     console.log("Starting asset loading...");
     const loadPromises: Promise<void>[] = [];
-    const allConfigs = { ...plantConfigs, ...decorConfigs };
     const modelPathsToLoad = new Set<string>();
 
-    for (const typeId in allConfigs) {
-        if (typeId === 'default' && !plantConfigs.default.modelPath) continue;
-        const config = allConfigs[typeId];
-        if (config.modelPath) modelPathsToLoad.add(config.modelPath);
-        else console.warn(`No model path for ${typeId}`);
+    // Add models from Plants
+    for (const typeId in plantConfigs) {
+        if (typeId === 'default' && (!plantConfigs.default.growthStages || plantConfigs.default.growthStages.length === 0)) continue; // Skip default if no stages
+        const config = plantConfigs[typeId];
+        if (config.growthStages && config.growthStages.length > 0) {
+            config.growthStages.forEach(stage => {
+                if (stage.modelPath) {
+                    modelPathsToLoad.add(stage.modelPath);
+                } else {
+                     console.warn(`Plant config ${typeId} has a growth stage missing a modelPath.`);
+                }
+            });
+        } else {
+            console.warn(`Plant config ${typeId} is missing growthStages array.`);
+        }
     }
 
+    // Add models from Decor
+    for (const typeId in decorConfigs) {
+        const config = decorConfigs[typeId];
+        if (config.modelPath) {
+            modelPathsToLoad.add(config.modelPath);
+        } else {
+             console.warn(`Decor config ${typeId} is missing modelPath.`);
+        }
+    }
+
+    // --- The rest of the loading logic remains the same ---
+    // It iterates through modelPathsToLoad and caches them in gltfCache
     for (const modelPath of modelPathsToLoad) {
         if (!gltfCache[modelPath]) {
             const loadPromise = new Promise<void>((resolve, reject) => {
                 gltfLoader.load( modelPath, (gltf) => {
                         console.log(`Loaded: ${modelPath}`);
-                        // Determine target size based on config using this model
-                        let targetSize = CELL_SIZE; // Default
-                        // Find a config using this model to hint at size (best effort)
-                        const configUsingModel = Object.values(allConfigs).find(c => c.modelPath === modelPath);
-                        if(configUsingModel && configUsingModel.size.rows === 1 && configUsingModel.size.cols === 1) {
-                             targetSize = CELL_SIZE;
-                        } else if (configUsingModel) {
-                            // For multi-cell items, maybe normalize based on diagonal or largest dim?
-                            // Let's stick to CELL_SIZE normalization for simplicity, the config's baseScale can adjust later if needed.
-                             targetSize = CELL_SIZE; // Keep target size 1 cell for normalization base
-                        }
+                        let targetSize = CELL_SIZE; // Default normalization target
 
+                        // --- Use extractAndPrepareGltfData (no changes needed here) ---
                         const preparedData = extractAndPrepareGltfData(gltf.scene, targetSize);
                         if (preparedData) {
                             gltfCache[modelPath] = preparedData;
                         } else {
                             console.error(`Failed to extract data from GLTF: ${modelPath}`);
                         }
-                        resolve(); // Resolve even if extraction fails, to not block loading
+                        resolve();
                     },
-                    undefined,
+                    undefined, // Progress callback (optional)
                     (error) => {
                         console.error(`Error loading GLTF: ${modelPath}`, error);
-                        resolve(); // Resolve on error too
+                         // Add placeholder cache entry on failure?
+                         // gltfCache[modelPath] = createPlaceholderCacheEntry(); // Requires a function to make placeholder data
+                        resolve(); // Resolve even on error to not block everything
                     }
                 );
             });
@@ -1474,7 +1729,7 @@ async function loadAssets() {
         console.log("Asset loading process finished.");
     } catch (error) {
         console.error("Error during asset loading:", error);
-        assetsLoaded = false;
+        assetsLoaded = false; // Mark as not loaded on error
     }
 }
 // --- End Asset Loading ---
@@ -1613,10 +1868,11 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
     // saveGardenState();
 };
 
-// --- renderFrame (Adjusted for new update logic) ---
+      
+// --- renderFrame (Adjusted for Model Swapping) ---
 function renderFrame() {
-	renderRequested = false;
-	animationFrameId = undefined;
+    renderRequested = false;
+    animationFrameId = undefined; // Clear the ID tracking this frame
     const now = new Date();
     const currentMinute = now.getMinutes();
 
@@ -1624,71 +1880,113 @@ function renderFrame() {
     if (currentMinute !== lastDayNightUpdateMinute) {
         updateDayNightCycle(now);
         lastDayNightUpdateMinute = currentMinute;
+        // Day/night change always requires a render, but renderFrame is already running
     }
 
     let needsSave = false;
-	const nowTimestamp = now.getTime();
+    let needsRenderLater = false; // Flag if any visual update happens
+    const nowTimestamp = now.getTime();
     const plantsToRemoveFromUpdateList: PlantInfo[] = [];
 
-	// --- Update Growable Plants ---
+    // --- Update Growable Plants ---
     for (const plantInfo of updatablePlants) {
-        let shouldBeRemoved = false;
-        let needsVisualUpdateFromGrowth = false;
+        let shouldBeRemovedFromUpdateList = false;
+        let needsVisualUpdateThisFrame = false; // Did *this specific plant* change visually?
 
-        // Check Thirst first
+        // --- Get Stage BEFORE growth update ---
+        const stageBeforeUpdate = getGrowthStageConfig(plantInfo);
+
+        // --- Check Thirst first (can happen regardless of growth) ---
         const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
         if (plantInfo.state === 'healthy' && (nowTimestamp - plantInfo.lastWateredTime) > config.thirstThresholdSeconds * 1000) {
             plantInfo.state = 'needs_water';
-            plantInfo.lastUpdateTime = nowTimestamp;
+            plantInfo.lastUpdateTime = nowTimestamp; // Update time even if state changes
             needsSave = true;
-            updatePlantVisuals(plantInfo); // Update color immediately
-            shouldBeRemoved = true; // Stop growth updates
+            needsVisualUpdateThisFrame = true; // Color will change
+            shouldBeRemovedFromUpdateList = true; // Stop growth updates
             console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] became thirsty.`);
         } else if (plantInfo.state === 'healthy') {
-            // Healthy: Check Growth
-            needsVisualUpdateFromGrowth = updatePlantGrowth(plantInfo); // Updates progress and lastUpdateTime
+            // --- Healthy: Check Growth ---
+            const growthOccurred = updatePlantGrowth(plantInfo); // Updates progress and lastUpdateTime
 
-            if (needsVisualUpdateFromGrowth) {
-                 updatePlantVisuals(plantInfo); // Update scale/pos due to growth
+            if (growthOccurred) {
+                 needsVisualUpdateThisFrame = true; // Scale/pos might change
             }
 
+            // --- Check for Stage Change AFTER growth update ---
+            const stageAfterUpdate = getGrowthStageConfig(plantInfo);
+
+            if (stageBeforeUpdate && stageAfterUpdate && stageBeforeUpdate.modelPath !== stageAfterUpdate.modelPath) {
+                 console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] changed stage!`);
+                 console.log(`   From: ${stageBeforeUpdate.modelPath} (Prog: ${(plantInfo.growthProgress - 0.001).toFixed(3)})`); // Show approx progress before change
+                 console.log(`   To:   ${stageAfterUpdate.modelPath} (Prog: ${plantInfo.growthProgress.toFixed(3)})`);
+
+                 // --- SWAP MODEL ---
+                 const swapSuccess = swapPlantModel(plantInfo, stageAfterUpdate.modelPath);
+                 if (swapSuccess) {
+                    needsVisualUpdateThisFrame = true; // Ensure visuals are updated with new model
+                 } else {
+                    console.error("Model swap failed. Visuals may be incorrect.");
+                    // Decide how to handle failure - stop growth? Show placeholder?
+                 }
+            }
+
+            // Check if finished growing *after* potential stage swap
             if (plantInfo.growthProgress >= 1.0) {
-                shouldBeRemoved = true; // Finished growing
+                shouldBeRemovedFromUpdateList = true; // Finished growing
                 console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] finished growing.`);
             }
         } else { // Already thirsty
-             plantInfo.lastUpdateTime = nowTimestamp; // Keep timestamp fresh
-             shouldBeRemoved = true; // Should already be marked, but ensure
+            plantInfo.lastUpdateTime = nowTimestamp; // Keep timestamp fresh even if thirsty
+            shouldBeRemovedFromUpdateList = true; // Should already be marked, but ensure
         }
 
-        if (shouldBeRemoved) {
-			plantsToRemoveFromUpdateList.push(plantInfo);
+        // --- Update Visuals for THIS plant if needed ---
+        if (needsVisualUpdateThisFrame) {
+            updatePlantVisuals(plantInfo); // Handles scale, position, tint, uses CURRENT object3D
+            needsRenderLater = true; // Signal that the renderer needs to run
+        }
+
+        // --- Mark for removal from active updates ---
+        if (shouldBeRemovedFromUpdateList) {
+            plantsToRemoveFromUpdateList.push(plantInfo);
         }
     } // End loop over updatablePlants
 
-	// Remove plants that became idle/thirsty
+    // Remove plants that became idle/thirsty/fully grown
     if (plantsToRemoveFromUpdateList.length > 0) {
         plantsToRemoveFromUpdateList.forEach(p => updatablePlants.delete(p));
         console.log(`Removed ${plantsToRemoveFromUpdateList.length} plants from update list. New size: ${updatablePlants.size}`);
+        // No need to request render here, as the removal itself doesn't change visuals immediately
     }
 
-	if (needsSave) {
+    // --- Save State if changed ---
+    if (needsSave) {
         debouncedSaveGardenState();
     }
 
-	// Render Scene
+    // --- Render Scene ---
+    // Render if visuals changed OR day/night changed OR if loop is meant to continue
+    // We render unconditionally within the loop if active,
+    // or if a single frame was requested (renderRequested was true at start)
+    // The needsRenderLater flag isn't strictly necessary with current loop logic but can be useful
     renderer.render(scene, camera);
 
-    // Continue loop only if interacting (dragging item)
-    const shouldContinueLoop = isInteracting;
+    // --- Manage Render Loop ---
+    const shouldContinueLoop = isInteracting || updatablePlants.size > 0; // Continue if dragging OR plants are still growing
 
-    if (shouldContinueLoop) {
+    if (shouldContinueLoop && isRenderLoopActive) {
+        // Still active and need to continue
         animationFrameId = requestAnimationFrame(renderFrame);
-    } else if (isRenderLoopActive) {
-        // Interaction stopped, transition back to background checks
-        stopRenderLoop();
+    } else if (shouldContinueLoop && !isRenderLoopActive) {
+        // Was inactive, but now needs to be active (e.g. plant started growing again)
+        startRenderLoop(); // This will request the next frame
     }
-    // If !isRenderLoopActive, this was a single requested frame. Do nothing more.
+    else if (!shouldContinueLoop && isRenderLoopActive) {
+        // Was active, but interaction stopped AND no plants are growing
+        stopRenderLoop(); // Transition back to background checks
+    }
+    // If !shouldContinueLoop and !isRenderLoopActive -> Was a single frame request, loop ends naturally.
 }
 // --- End renderFrame ---
 
