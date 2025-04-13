@@ -268,21 +268,28 @@ let currentHeldItem: HeldItemInfo | null = null;
 let isPointerDragging = false; // Local state reflecting the store
 /// --- End Bounding Boxes ---
 
+// --- Types for Shader Uniforms (Ensure this exists or add it) ---
 interface ObjectShaderUniforms {
     fade: { value: number };
     waterEffect: { value: number };
+    // NEW uniforms for watering effect
+    waterProgress: { value: number };
+    modelMinY: { value: number };
+    modelMaxY: { value: number };
+    waterEffectWidth: { value: number };
 }
 
-/// --- Animation Variables
+// --- Update ActiveAnimation interface ---
 interface ActiveAnimation {
     uniform: { value: number };
     targetValue: number;
-    startValue: number; // Store the starting value
+    startValue: number;
     duration: number;
     startTime: number;
     onComplete?: () => void;
     isPingPong?: boolean;
     pingPongReachedPeak?: boolean;
+    ease?: (t: number) => number; // NEW: Easing function
 }
 const activeAnimations: ActiveAnimation[] = [];
 /// --- End Animation Variables
@@ -293,6 +300,7 @@ const tempQuaternion = new THREE.Quaternion();
 const tempScaleVector = new THREE.Vector3();
 const tempColor = new THREE.Color(); // Keep for color manipulation
 
+// --- Update CachedGltfData ---
 interface CachedGltfData {
     scene: THREE.Group; // The *original* loaded scene (to be cloned)
     baseScale: number; // Scale factor to normalize model size
@@ -300,6 +308,9 @@ interface CachedGltfData {
     centerOffsetX: number;
     centerOffsetY: number;
     centerOffsetZ: number;
+    // NEW: Store model bounds
+    modelMinY: number;
+    modelMaxY: number;
 }
 
 // --- Day/Night Cycle Configuration ---
@@ -477,11 +488,13 @@ function calculateSegmentProgress(cycleProgress: number, startPoint: number, end
 }
 
 /// --- Helper: Extract Geometry/Material and Calculate Scale from GLTF (Improved Centering & Normalization) ---
-function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 1.0): CachedGltfData | null { // Default targetSize = 1.0
-    let modelNormalizationScale = 1.0; // Renamed for clarity
+function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 1.0): CachedGltfData | null {
+    let modelNormalizationScale = 1.0;
     let centerOffsetX = 0;
     let centerOffsetY = 0;
     let centerOffsetZ = 0;
+    let modelMinY = 0; // NEW: Initialize bounds
+    let modelMaxY = 0; // NEW: Initialize bounds
 
     // --- Calculate Bounding Box for the entire scene ---
     const box = new THREE.Box3();
@@ -493,34 +506,32 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
     const center = new THREE.Vector3();
     box.getCenter(center);
 
+    // --- STORE ORIGINAL BOUNDS ---
+    // Store these *before* calculating centering offsets
+    modelMinY = box.min.y;
+    modelMaxY = box.max.y;
+    // --- End Store Bounds ---
+
+
     if (size.x === 0 && size.y === 0 && size.z === 0) {
         console.warn("GLTF scene bounding box is zero. Using default scale/offset.", gltfScene);
-        // Keep default scale/offsets
     } else {
-        // Use max dimension for normalization scale
         const maxDim = Math.max(size.x, size.y, size.z);
 
         if (maxDim > 0) {
-            // Calculate scale needed to make the largest dimension equal to targetSize (now 1.0)
             modelNormalizationScale = targetSize / maxDim;
         } else {
-            modelNormalizationScale = 1.0; // Avoid division by zero
+            modelNormalizationScale = 1.0;
         }
 
-        // Calculate offsets needed to move the *center* of the bounding box
-        // to (0, min.y, 0) *before* scaling. These are relative to the original model size.
-        centerOffsetY = -box.min.y; // Offset needed before scaling to put base at y=0
-        centerOffsetX = -center.x;   // Offset needed before scaling to put center at x=0
-        centerOffsetZ = -center.z;   // Offset needed before scaling to put center at z=0
+        // Offsets calculated relative to original model size
+        centerOffsetY = -box.min.y; // Offset needed *before scaling* to put base at y=0
+        centerOffsetX = -center.x;
+        centerOffsetZ = -center.z;
 
-        console.log(`GLTF Prep: Path=${gltfScene.userData.path || 'N/A'}`);
-        /* console.log(`  Orig Size=(${size.x.toFixed(2)}, ${size.y.toFixed(2)}, ${size.z.toFixed(2)})`);
-        console.log(`  Orig BoxMin=(${box.min.x.toFixed(2)}, ${box.min.y.toFixed(2)}, ${box.min.z.toFixed(2)})`);
-        console.log(`  Orig BoxCenter=(${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
-        console.log(`  MaxDim=${maxDim.toFixed(2)}, TargetSize=${targetSize.toFixed(2)}, ModelNormScale=${modelNormalizationScale.toFixed(4)}`); // Log new scale name
-        console.log(`  Pre-Scale Offsets: dX=${centerOffsetX.toFixed(2)}, dY=${centerOffsetY.toFixed(2)}, dZ=${centerOffsetZ.toFixed(2)}`); */
+        // console.log(`GLTF Prep: Path=${gltfScene.userData.path || 'N/A'}`);
+        // console.log(`  Orig Bounds Y: [${modelMinY.toFixed(2)}, ${modelMaxY.toFixed(2)}]`); // Log bounds
     }
-     // --- End Bounding Box Calculation ---
 
     // Ensure shadows are enabled on descendants
     gltfScene.traverse((child) => {
@@ -530,34 +541,45 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
         }
     });
 
-    // Return the calculated data, using the new name for baseScale
+    // Return the calculated data including bounds
     return {
         scene: gltfScene,
-        baseScale: modelNormalizationScale, // Storing the normalization scale here
+        baseScale: modelNormalizationScale,
         centerOffsetX,
         centerOffsetY,
-        centerOffsetZ
+        centerOffsetZ,
+        modelMinY, // NEW
+        modelMaxY  // NEW
      };
 }
-// --- End Helper ---
 
+      
 // --- GLSL Injection Function ---
 function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader: string; uniforms: any }, uniforms: ObjectShaderUniforms) {
     // Add uniforms to the shader
     shader.uniforms.u_fadeProgress = uniforms.fade;
-    shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect;
+    shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect; // Intensity (0 to 1, should be eased on CPU)
+    shader.uniforms.u_waterProgress = uniforms.waterProgress;   // Top-to-bottom progress (0 to 1)
+    shader.uniforms.u_modelMinY = uniforms.modelMinY;         // Object's min Y in model space
+    shader.uniforms.u_modelMaxY = uniforms.modelMaxY;         // Object's max Y in model space
+    shader.uniforms.u_waterEffectWidth = uniforms.waterEffectWidth || { value: 0.1 }; // Width of the bright band (optional uniform)
 
     // Inject vertex shader code
     shader.vertexShader = `
         uniform float u_waterEffectIntensity;
+        varying vec3 v_modelPosition; // Pass model space position
         varying float v_waterEffectIntensity; // Pass intensity to fragment shader
+
         ${shader.vertexShader}
     `.replace(
         `#include <begin_vertex>`,
         `#include <begin_vertex>
-        v_waterEffectIntensity = u_waterEffectIntensity; // Pass to fragment
+        // Pass necessary varyings
+        v_modelPosition = position; // Get position in model space
+        v_waterEffectIntensity = u_waterEffectIntensity; // Pass intensity along
 
         // Watering scale effect (applied in model space before world transform)
+        // Use the overall eased intensity for scaling
         float scaleEffect = 1.0 + u_waterEffectIntensity * 0.1; // e.g., 10% bigger at peak intensity
         transformed *= scaleEffect;
         `
@@ -566,19 +588,55 @@ function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader
     // Inject fragment shader code
     shader.fragmentShader = `
         uniform float u_fadeProgress;
-        uniform float u_waterEffectIntensity;
-        varying float v_waterEffectIntensity; // Receive from vertex shader
+        uniform float u_waterEffectIntensity; // Overall eased intensity (0 -> 1 -> 0)
+        uniform float u_waterProgress;      // Water line progress (0 -> 1)
+        uniform float u_modelMinY;          // Model's min Y coordinate
+        uniform float u_modelMaxY;          // Model's max Y coordinate
+        uniform float u_waterEffectWidth;   // Width of the effect band (e.g., 0.1 for 10% of height)
+
+        varying vec3 v_modelPosition;       // Received model space position
+        varying float v_waterEffectIntensity; // Received overall eased intensity
+
+        // Helper function for safe normalization
+        float safeNormalize(float value, float minVal, float maxVal) {
+            float range = maxVal - minVal;
+            // Avoid division by zero for flat objects or invalid bounds
+            if (range < 0.0001) return 0.5; // Or 0.0 or 1.0 depending on desired behavior
+            return clamp((value - minVal) / range, 0.0, 1.0);
+        }
+
         ${shader.fragmentShader}
     `.replace(
         `#include <dithering_fragment>`, // A common place to modify final color/alpha
         `#include <dithering_fragment>
 
-        // Fade Effect (applied to alpha)
-        gl_FragColor.a *= u_fadeProgress;
+        // --- Watering Brightness Effect (Top-to-Bottom) ---
 
-        // Watering Brightness Effect (applied to color)
-        float brightnessBoost = 1.0 + v_waterEffectIntensity * 0.5; // e.g., 50% brighter at peak intensity
+        // 1. Normalize the fragment's vertical position (0 = bottom, 1 = top)
+        float normalizedY = safeNormalize(v_modelPosition.y, u_modelMinY, u_modelMaxY);
+
+        // 2. Determine the current "water line" position (normalized, 1 = top, 0 = bottom)
+        float waterLine = 1.0 - u_waterProgress; // As progress increases, waterLine decreases
+
+        // 3. Calculate how much this fragment should be affected based on its proximity to the water line
+        // Use smoothstep for a soft band around the water line
+        float lowerEdge = waterLine - u_waterEffectWidth * 0.5;
+        float upperEdge = waterLine + u_waterEffectWidth * 0.5;
+        float positionalIntensity = smoothstep(lowerEdge, waterLine, normalizedY) - smoothstep(waterLine, upperEdge, normalizedY);
+        // Clamp to ensure it doesn't go negative due to float precision
+        positionalIntensity = clamp(positionalIntensity, 0.0, 1.0);
+
+
+        // 4. Calculate the final brightness boost:
+        // Modulate the overall (eased) effect intensity by the positional intensity
+        float brightnessBoost = 1.0 + (v_waterEffectIntensity * positionalIntensity * 0.5); // e.g., 50% brighter at peak
+
+        // Apply brightness boost
         gl_FragColor.rgb *= brightnessBoost;
+
+
+        // --- Fade Effect (applied to alpha) ---
+        gl_FragColor.a *= u_fadeProgress;
 
         // Discard pixel entirely if fully faded (optional optimization)
         if (gl_FragColor.a < 0.01) discard;
@@ -731,7 +789,7 @@ function initializeGrid() {
 
     // --- 5. Rebuild Material Map & Apply Visuals ---
     // Rebuild map *before* applying tint in updatePlantVisuals
-    rebuildOriginalMaterialColors(plantInfo);
+    rebuildOriginalMaterialColors(plantInfo, newModelPath);
     // Update visuals (position, scale, tint) based on current state and *new* model data
     updatePlantVisuals(plantInfo); // This will use the new object3D and its corresponding cached data
 
@@ -817,7 +875,7 @@ function updatePlantVisuals(plantInfo: PlantInfo) {
 
     if (!plantInfo.originalMaterialColors) {
         console.warn(`Plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] missing originalMaterialColors map for tinting. Rebuilding...`);
-        rebuildOriginalMaterialColors(plantInfo);
+        rebuildOriginalMaterialColors(plantInfo, currentStage.modelPath);
         if (!plantInfo.originalMaterialColors) {
              console.error(`   Failed to rebuild originalMaterialColors. Tinting skipped.`);
              return; // Skip tinting if rebuild failed
@@ -892,40 +950,63 @@ function updateDecorVisuals(decorInfo: DecorInfo) {
 	decorInfo.object3D.rotation.set(0, decorInfo.rotationY, 0);
 }
 
+// --- Easing Functions ---
+const linearEase = (t: number): number => t;
+const cubicOutEase = (t: number): number => 1 - Math.pow(1 - t, 3);
+const power1InEase = (t: number): number => t * t; // Example for the down-part of ping pong if needed
+
+// --- Animation Helpers (Modified) ---
+
 // Helper to start an animation
-function animateUniform(uniform: { value: number }, targetValue: number, duration: number, onComplete?: () => void) {
-    // Remove any existing animation on the same uniform
+function animateUniform(
+    uniform: { value: number },
+    targetValue: number,
+    duration: number,
+    ease: (t: number) => number = linearEase, // Default to linear
+    onComplete?: () => void
+) {
     const existingIndex = activeAnimations.findIndex(a => a.uniform === uniform);
     if (existingIndex > -1) activeAnimations.splice(existingIndex, 1);
 
     activeAnimations.push({
         uniform,
         targetValue,
-        startValue: uniform.value, // Capture current value as start
+        startValue: uniform.value,
         duration,
         startTime: performance.now(),
-        onComplete
+        onComplete,
+        ease // Store the ease function
     });
-    startRenderLoop(); // Ensure render loop runs for animation
+    startRenderLoop();
 }
 
 // Helper for ping-pong effect (0 -> peak -> 0)
-function animateUniformPingPong(uniform: { value: number }, peakValue: number, duration: number, onComplete?: () => void) {
-     // Remove any existing animation on the same uniform
+function animateUniformPingPong(
+    uniform: { value: number },
+    peakValue: number,
+    duration: number, // Total duration for 0 -> peak -> 0
+    easeUp: (t: number) => number = cubicOutEase, // Ease for 0 -> peak
+    easeDown: (t: number) => number = power1InEase, // Ease for peak -> 0
+    onComplete?: () => void
+) {
     const existingIndex = activeAnimations.findIndex(a => a.uniform === uniform);
     if (existingIndex > -1) activeAnimations.splice(existingIndex, 1);
 
+    const halfDuration = duration / 2;
+    uniform.value = 0.0; // Ensure start at 0
+
+    // Phase 1: 0 -> peak
     activeAnimations.push({
         uniform,
-        targetValue: peakValue, // Target is the peak for the first half
-        startValue: 0.0,        // Assume starting from 0
-        duration: duration / 2, // Duration for first half
+        targetValue: peakValue,
+        startValue: 0.0,
+        duration: halfDuration,
         startTime: performance.now(),
-        onComplete,
         isPingPong: true,
-        pingPongReachedPeak: false
+        pingPongReachedPeak: false,
+        ease: easeUp, // Use easeUp for first half
+        // onComplete will be handled by phase 2
     });
-    uniform.value = 0.0; // Ensure start at 0
     startRenderLoop();
 }
 
@@ -1360,7 +1441,7 @@ function removeGridObjectAt(row: number, col: number) {
     Object.values(objectToRemove.shaderUniforms ?? {}).forEach(uniforms => {
         if (uniforms.fade.value > 0.01) { // Only fade if not already faded
             animationsPending++;
-            animateUniform(uniforms.fade, 0.0, fadeDuration, onFadeComplete);
+            animateUniform(uniforms.fade, 0.0, fadeDuration, linearEase, onFadeComplete);
         }
     });
 
@@ -1454,23 +1535,28 @@ function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
 }
 
 // --- Helper to rebuild original material colors AND ensure unique instances ---
-function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo) { // Make generic
+// MODIFIED: Accepts modelPath to fetch correct cached data
+function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelPath: string) {
     if (!objectInfo.object3D) {
-        // console.warn(`Cannot rebuild materials for ${objectInfo.typeId} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}]: object3D is null.`);
+        return;
+    }
+    // Fetch cached data for the SPECIFIC model being used
+    const cachedGltfData = gltfCache[modelPath];
+    if (!cachedGltfData) {
+        console.error(`rebuildOriginalMaterialColors: Missing cached data for model ${modelPath}. Cannot setup shaders correctly.`);
         return;
     }
 
     const objectType = 'plantTypeId' in objectInfo ? 'plant' : 'decor';
     const typeId = objectType === 'plant' ? (objectInfo as PlantInfo).plantTypeId : (objectInfo as DecorInfo).decorTypeId;
-    
-    // Initialize or clear shader uniforms map for this object
+
+    // Initialize or clear maps
     objectInfo.shaderUniforms = {};
-    // Clear original colors map only for plants (if needed for tinting)
     if (objectType === 'plant') {
         (objectInfo as PlantInfo).originalMaterialColors = new Map<THREE.Material, THREE.Color>();
     }
 
-    console.log(`Rebuilding unique materials & shaders for ${typeId} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}]...`);
+    console.log(`Rebuilding unique materials & shaders for ${typeId} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}] using model ${modelPath}`);
 
     objectInfo.object3D.traverse((child) => {
         if (child instanceof THREE.Mesh && child.material) {
@@ -1479,38 +1565,38 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo) { // M
             let materialsChanged = false;
 
             originalMaterials.forEach(originalMat => {
-                // Only process standard or basic materials for effects/tinting
                 if (originalMat instanceof THREE.MeshStandardMaterial || originalMat instanceof THREE.MeshBasicMaterial) {
-                    const uniqueMat = originalMat.clone(); // Clone for unique instance
+                    const uniqueMat = originalMat.clone();
 
-                    // --- Store original color for tinting (Plants only) ---
                     if (objectType === 'plant') {
                         (objectInfo as PlantInfo).originalMaterialColors!.set(uniqueMat, uniqueMat.color.clone());
                     }
 
-                    // --- Setup Shader Uniforms & onBeforeCompile ---
-                    const fadeUniform = { value: 1.0 }; // Start fully visible by default
-                    const waterEffectUniform = { value: 0.0 }; // Start with no water effect
-                    const uniforms: ObjectShaderUniforms = { fade: fadeUniform, waterEffect: waterEffectUniform };
-
-                    // Store reference to uniforms using material's UUID as key
-                    objectInfo.shaderUniforms![uniqueMat.uuid] = uniforms;
-
-                    // Apply the GLSL modifications
-                    uniqueMat.onBeforeCompile = (shader) => {
-                        console.log(`Applying onBeforeCompile to material ${uniqueMat.uuid} for ${typeId}`);
-                        modifyMaterialForEffects(shader, uniforms);
-                        // Optional: Store shader reference if needed later: uniqueMat.userData.shader = shader;
+                    // --- Create ALL Shader Uniforms ---
+                    const uniforms: ObjectShaderUniforms = {
+                        fade: { value: 1.0 },
+                        waterEffect: { value: 0.0 },
+                        waterProgress: { value: 0.0 }, // Default progress
+                        // Fetch bounds from the correct cached data
+                        modelMinY: { value: cachedGltfData.modelMinY },
+                        modelMaxY: { value: cachedGltfData.modelMaxY },
+                        waterEffectWidth: { value: 0.15 } // Default width (adjust as needed)
                     };
 
-                    // IMPORTANT: Ensure material is transparent if fading is used
-                    uniqueMat.transparent = true;
-                    uniqueMat.needsUpdate = true; // Crucial for onBeforeCompile to trigger
+                    objectInfo.shaderUniforms![uniqueMat.uuid] = uniforms;
+
+                    uniqueMat.onBeforeCompile = (shader) => {
+                        console.log(`Applying onBeforeCompile to material ${uniqueMat.uuid} for ${typeId}`);
+                        // Pass the COMPLETE uniforms object for this specific material
+                        modifyMaterialForEffects(shader, uniforms);
+                    };
+
+                    uniqueMat.transparent = true; // Needs transparency for fade and potentially brightness effects
+                    uniqueMat.needsUpdate = true;
 
                     newMaterials.push(uniqueMat);
                     materialsChanged = true;
                 } else {
-                    // Keep non-standard materials as they are
                     newMaterials.push(originalMat);
                 }
             });
@@ -1653,7 +1739,7 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     }
 
     // --- 4. Rebuild Materials & Set Initial Transform ---
-    rebuildOriginalMaterialColors(newGridObject); // Apply shader mods & store uniforms
+    rebuildOriginalMaterialColors(newGridObject, modelPath); // Apply shader mods & store uniforms
 
     // Set initial visual state (scale, position, rotation, tint)
     if (objectType === 'plant') {
@@ -1762,7 +1848,6 @@ function waterPlantAt(row: number, col: number) {
                  updatablePlants.add(plantInfo);
                  console.log(`   Plant added back to updatable list.`);
                  // Request render only if loop isn't active AND visual state changed
-                 if (!isRenderLoopActive) requestRender();
             }
 		} else {
 			plantInfo.lastWateredTime = now; // Reset thirst timer even if healthy
@@ -1774,18 +1859,36 @@ function waterPlantAt(row: number, col: number) {
         // --- START WATERING ANIMATION ---
         if (plantInfo.shaderUniforms) {
              console.log(`Starting watering effect for ${plantInfo.plantTypeId}`);
+             const waterAnimDuration = 1200; // Total duration in ms (e.g., 1.2 seconds)
+
              Object.values(plantInfo.shaderUniforms).forEach(uniforms => {
-                 animateUniformPingPong(uniforms.waterEffect, 1.0, 600); // Animate 0->1->0 over 600ms
+                // 1. Animate Intensity (Ping-Pong with Easing)
+                // Uses cubicOut for up, power1In (t*t) for down by default
+                animateUniformPingPong(uniforms.waterEffect, 1.0, waterAnimDuration);
+
+                // 2. Animate Progress (Linear Top-to-Bottom)
+                uniforms.waterProgress.value = 0.0; // Reset progress
+                animateUniform(uniforms.waterProgress, 1.0, waterAnimDuration, linearEase, () => {
+                    // Optional: reset progress after completion if desired
+                    uniforms.waterProgress.value = 0.0;
+                });
              });
+             // Ensure render loop runs for the animation
+             startRenderLoop();
+        } else {
+            console.warn("Could not apply watering effect: shaderUniforms missing.");
+            // Request render only if state changed but no animation started
+            if(visualStateChanged && !isRenderLoopActive) requestRender();
         }
         // --- End Watering Animation --
 
-		if (visualStateChanged || timeUpdated) {
-            if(visualStateChanged && !isRenderLoopActive){
-                requestRender();
-            }
+		if (timeUpdated) {
 			debouncedSaveGardenState();
 		}
+        // Request render if visual state changed *and* no animation was started (which calls startRenderLoop)
+        if (visualStateChanged && !plantInfo.shaderUniforms && !isRenderLoopActive) {
+             requestRender();
+        }
 	} else if (gridObjectInfo) {
          console.log(`Cannot water: object at [${row}, ${col}] is decor.`);
     } else {
@@ -2270,34 +2373,43 @@ function renderFrame() {
     const nowTimestamp = now.getTime();
     const plantsToRemoveFromUpdateList: PlantInfo[] = [];
 
-    // --- Process Active Animations ---
+    // --- Process Active Animations (MODIFIED FOR EASING) ---
     const completedAnimationsIndices: number[] = [];
     activeAnimations.forEach((anim, index) => {
         const elapsed = perfNow - anim.startTime;
-        let progress = Math.min(1.0, elapsed / anim.duration);
+        let rawProgress = Math.min(1.0, elapsed / anim.duration);
+
+        // Apply easing function (default to linear if undefined)
+        const easeFunc = anim.ease || linearEase;
+        let easedProgress = easeFunc(rawProgress);
 
         if (anim.isPingPong) {
             if (!anim.pingPongReachedPeak) { // Phase 1: start -> peak
-                anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, progress);
-                if (progress >= 1.0) {
+                anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, easedProgress);
+                if (rawProgress >= 1.0) { // Check raw progress for completion
                     anim.pingPongReachedPeak = true;
                     anim.startTime = perfNow; // Reset time for phase 2
                     anim.startValue = anim.targetValue; // Start phase 2 from peak
                     anim.targetValue = 0.0; // Target phase 2 is 0
-                    anim.duration = anim.duration; // Use same duration for second half
+                    // Duration remains halfDuration (already set)
+                    // Set the easing for the *second* half (peak -> 0)
+                    anim.ease = power1InEase; // Or pass this in animateUniformPingPong
+                    // Don't mark as complete yet
                 }
             } else { // Phase 2: peak -> 0
-                anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, progress);
-                if (progress >= 1.0) {
-                    anim.uniform.value = 0.0; // Ensure end at 0
+                 // Easing function for phase 2 should already be set in anim.ease
+                 easedProgress = (anim.ease || linearEase)(rawProgress); // Re-apply easing for phase 2 progress
+                anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, easedProgress);
+                if (rawProgress >= 1.0) { // Check raw progress
+                    anim.uniform.value = anim.targetValue; // Ensure end value (0.0)
                     completedAnimationsIndices.push(index);
-                    if (anim.onComplete) anim.onComplete();
+                    if (anim.onComplete) anim.onComplete(); // Call original onComplete now
                 }
             }
         } else { // Standard animation
-            anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, progress);
-            if (progress >= 1.0) {
-                anim.uniform.value = anim.targetValue; // Ensure exact end value
+            anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, easedProgress);
+            if (rawProgress >= 1.0) { // Check raw progress
+                anim.uniform.value = anim.targetValue;
                 completedAnimationsIndices.push(index);
                 if (anim.onComplete) anim.onComplete();
             }
