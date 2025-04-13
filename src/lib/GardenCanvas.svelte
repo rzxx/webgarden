@@ -80,7 +80,7 @@ const plantConfigs: Record<string, PlantConfig> = {
         healthyColorTint: new THREE.Color(0xffffff),
         thirstyColorTint: new THREE.Color(0xa0a0a0),
         growthStages: [
-             { maxGrowth: 1.00, modelPath: '/models/box.glb' } // Default uses box
+             { maxGrowth: 1.00, modelPath: '/models/fern.glb' } // Default uses box
         ]
     }
 };
@@ -150,6 +150,7 @@ interface DecorInfo {
     lightObjects?: THREE.PointLight[];
     // NEW: Optional mapping if needed for updates (e.g., linking light back to its config name)
     lightMap?: Map<string, THREE.PointLight>; // Key: Empty name, Value: Light instance
+    shaderUniforms?: Record<string, ObjectShaderUniforms>; // Map material UUID to its uniforms
 }
 // --- End Decor Instance Data ---
 
@@ -157,16 +158,16 @@ interface DecorInfo {
 
 // --- Grid Cell Data Type (Updated) ---
 interface PlantInfo {
-	plantTypeId: string;
-	state: 'healthy' | 'needs_water';
-	growthProgress: number; // 0.0 to 1.0
-	lastUpdateTime: number;
-	lastWateredTime: number;
-	size: { rows: number; cols: number };
-	gridPos: { row: number; col: number };
-    object3D: THREE.Group | null; // Reference to the actual Three.js object
-    // Store original material colors for reverting tints
+    plantTypeId: string;
+    state: 'healthy' | 'needs_water';
+    growthProgress: number; // 0.0 to 1.0
+    lastUpdateTime: number;
+    lastWateredTime: number;
+    size: { rows: number; cols: number };
+    gridPos: { row: number; col: number };
+    object3D: THREE.Group | null;
     originalMaterialColors?: Map<THREE.Material, THREE.Color>;
+    shaderUniforms?: Record<string, ObjectShaderUniforms>; // Map material UUID to its uniforms
 }
 
 // Grid cell can be: empty, the main plant info, or a pointer to the main info
@@ -266,6 +267,25 @@ const thirstyColor = new THREE.Color(thirstyMaterial.color);
 let currentHeldItem: HeldItemInfo | null = null;
 let isPointerDragging = false; // Local state reflecting the store
 /// --- End Bounding Boxes ---
+
+interface ObjectShaderUniforms {
+    fade: { value: number };
+    waterEffect: { value: number };
+}
+
+/// --- Animation Variables
+interface ActiveAnimation {
+    uniform: { value: number };
+    targetValue: number;
+    startValue: number; // Store the starting value
+    duration: number;
+    startTime: number;
+    onComplete?: () => void;
+    isPingPong?: boolean;
+    pingPongReachedPeak?: boolean;
+}
+const activeAnimations: ActiveAnimation[] = [];
+/// --- End Animation Variables
 
 // --- Reusable objects for updates ---
 const tempVector3 = new THREE.Vector3();
@@ -494,11 +514,11 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
         centerOffsetZ = -center.z;   // Offset needed before scaling to put center at z=0
 
         console.log(`GLTF Prep: Path=${gltfScene.userData.path || 'N/A'}`);
-        console.log(`  Orig Size=(${size.x.toFixed(2)}, ${size.y.toFixed(2)}, ${size.z.toFixed(2)})`);
+        /* console.log(`  Orig Size=(${size.x.toFixed(2)}, ${size.y.toFixed(2)}, ${size.z.toFixed(2)})`);
         console.log(`  Orig BoxMin=(${box.min.x.toFixed(2)}, ${box.min.y.toFixed(2)}, ${box.min.z.toFixed(2)})`);
         console.log(`  Orig BoxCenter=(${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)})`);
         console.log(`  MaxDim=${maxDim.toFixed(2)}, TargetSize=${targetSize.toFixed(2)}, ModelNormScale=${modelNormalizationScale.toFixed(4)}`); // Log new scale name
-        console.log(`  Pre-Scale Offsets: dX=${centerOffsetX.toFixed(2)}, dY=${centerOffsetY.toFixed(2)}, dZ=${centerOffsetZ.toFixed(2)}`);
+        console.log(`  Pre-Scale Offsets: dX=${centerOffsetX.toFixed(2)}, dY=${centerOffsetY.toFixed(2)}, dZ=${centerOffsetZ.toFixed(2)}`); */
     }
      // --- End Bounding Box Calculation ---
 
@@ -520,6 +540,52 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
      };
 }
 // --- End Helper ---
+
+// --- GLSL Injection Function ---
+function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader: string; uniforms: any }, uniforms: ObjectShaderUniforms) {
+    // Add uniforms to the shader
+    shader.uniforms.u_fadeProgress = uniforms.fade;
+    shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect;
+
+    // Inject vertex shader code
+    shader.vertexShader = `
+        uniform float u_waterEffectIntensity;
+        varying float v_waterEffectIntensity; // Pass intensity to fragment shader
+        ${shader.vertexShader}
+    `.replace(
+        `#include <begin_vertex>`,
+        `#include <begin_vertex>
+        v_waterEffectIntensity = u_waterEffectIntensity; // Pass to fragment
+
+        // Watering scale effect (applied in model space before world transform)
+        float scaleEffect = 1.0 + u_waterEffectIntensity * 0.1; // e.g., 10% bigger at peak intensity
+        transformed *= scaleEffect;
+        `
+    );
+
+    // Inject fragment shader code
+    shader.fragmentShader = `
+        uniform float u_fadeProgress;
+        uniform float u_waterEffectIntensity;
+        varying float v_waterEffectIntensity; // Receive from vertex shader
+        ${shader.fragmentShader}
+    `.replace(
+        `#include <dithering_fragment>`, // A common place to modify final color/alpha
+        `#include <dithering_fragment>
+
+        // Fade Effect (applied to alpha)
+        gl_FragColor.a *= u_fadeProgress;
+
+        // Watering Brightness Effect (applied to color)
+        float brightnessBoost = 1.0 + v_waterEffectIntensity * 0.5; // e.g., 50% brighter at peak intensity
+        gl_FragColor.rgb *= brightnessBoost;
+
+        // Discard pixel entirely if fully faded (optional optimization)
+        if (gl_FragColor.a < 0.01) discard;
+        `
+    );
+}
+// --- End GLSL Injection ---
 
 /**
  * Finds the appropriate growth stage configuration based on the plant's current progress.
@@ -824,6 +890,43 @@ function updateDecorVisuals(decorInfo: DecorInfo) {
     );
     decorInfo.object3D.scale.set(finalScale, finalScale, finalScale);
 	decorInfo.object3D.rotation.set(0, decorInfo.rotationY, 0);
+}
+
+// Helper to start an animation
+function animateUniform(uniform: { value: number }, targetValue: number, duration: number, onComplete?: () => void) {
+    // Remove any existing animation on the same uniform
+    const existingIndex = activeAnimations.findIndex(a => a.uniform === uniform);
+    if (existingIndex > -1) activeAnimations.splice(existingIndex, 1);
+
+    activeAnimations.push({
+        uniform,
+        targetValue,
+        startValue: uniform.value, // Capture current value as start
+        duration,
+        startTime: performance.now(),
+        onComplete
+    });
+    startRenderLoop(); // Ensure render loop runs for animation
+}
+
+// Helper for ping-pong effect (0 -> peak -> 0)
+function animateUniformPingPong(uniform: { value: number }, peakValue: number, duration: number, onComplete?: () => void) {
+     // Remove any existing animation on the same uniform
+    const existingIndex = activeAnimations.findIndex(a => a.uniform === uniform);
+    if (existingIndex > -1) activeAnimations.splice(existingIndex, 1);
+
+    activeAnimations.push({
+        uniform,
+        targetValue: peakValue, // Target is the peak for the first half
+        startValue: 0.0,        // Assume starting from 0
+        duration: duration / 2, // Duration for first half
+        startTime: performance.now(),
+        onComplete,
+        isPingPong: true,
+        pingPongReachedPeak: false
+    });
+    uniform.value = 0.0; // Ensure start at 0
+    startRenderLoop();
 }
 
 // --- Helper to check if area is free ---
@@ -1221,147 +1324,208 @@ function updatePlantGrowth(plantInfo: PlantInfo): boolean {
 	return needsVisualUpdate;
 }
 
-// --- Function to Remove Grid Object (REWRITTEN) ---
+// --- Function to Remove Grid Object (Modified for Fade Out) ---
 function removeGridObjectAt(row: number, col: number) {
-    const gridObjectInfo = getGridObjectInfoAt(row, col); // Get the main info object
+    const gridObjectInfo = getGridObjectInfoAt(row, col);
 
-    if (!gridObjectInfo) {
-        console.log(`No object found at or pointed to by [${row}, ${col}] to remove.`);
+    if (!gridObjectInfo || !gridObjectInfo.object3D || !gridObjectInfo.shaderUniforms) {
+        console.log(`No object with shader uniforms found at [${row}, ${col}] to fade out and remove.`);
+        // Optionally, add logic here to remove objects without shaders immediately
+        if (gridObjectInfo) {
+             // Fallback to immediate removal if needed
+             performImmediateRemoval(gridObjectInfo);
+        }
         return;
     }
 
-    const objectType = 'plantTypeId' in gridObjectInfo ? 'plant' : 'decor';
-    const typeId = objectType === 'plant' ? (gridObjectInfo as PlantInfo).plantTypeId : (gridObjectInfo as DecorInfo).decorTypeId;
-    const objectToRemove = gridObjectInfo; // Keep a reference
+    const objectToRemove = gridObjectInfo;
+    const objectType = 'plantTypeId' in objectToRemove ? 'plant' : 'decor';
+    const typeId = objectType === 'plant' ? (objectToRemove as PlantInfo).plantTypeId : (objectToRemove as DecorInfo).decorTypeId;
 
-    console.log(`Removing ${objectType} ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}]`);
+    console.log(`Starting fade-out for ${objectType} ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}]`);
+
+    const fadeDuration = 300; // ms
+    let animationsPending = 0;
+
+    // --- Callback after ALL fade animations for this object complete ---
+    const onFadeComplete = () => {
+        animationsPending--;
+        if (animationsPending <= 0) {
+            console.log(`Fade out complete for ${typeId}, proceeding with removal.`);
+            performImmediateRemoval(objectToRemove); // Call the actual removal logic
+        }
+    };
+
+    // --- Start fade-out for all materials ---
+    Object.values(objectToRemove.shaderUniforms ?? {}).forEach(uniforms => {
+        if (uniforms.fade.value > 0.01) { // Only fade if not already faded
+            animationsPending++;
+            animateUniform(uniforms.fade, 0.0, fadeDuration, onFadeComplete);
+        }
+    });
+
+    if (animationsPending === 0) {
+        // No materials needed fading (already faded or none found)
+        console.log(`No fade animation needed for ${typeId}, removing immediately.`);
+        performImmediateRemoval(objectToRemove);
+    }
+    // IMPORTANT: The rest of the removal logic is now in performImmediateRemoval
+}
+
+// --- Helper for the actual removal steps (called after fade-out) ---
+function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
+     const objectType = 'plantTypeId' in objectToRemove ? 'plant' : 'decor';
+     const typeId = objectType === 'plant' ? (objectToRemove as PlantInfo).plantTypeId : (objectToRemove as DecorInfo).decorTypeId;
+     const gridPos = objectToRemove.gridPos; // Capture before potential modification
+
+     console.log(`Performing immediate removal of ${typeId} at [${gridPos.row}, ${gridPos.col}]`);
 
     // --- 1. Remove Object3D from Scene and Dispose ---
     if (objectToRemove.object3D) {
-        // --- NEW: Handle Lights BEFORE removing main object ---
+        // Handle Decor Lights
         if (objectType === 'decor') {
-            const decorInfo = objectToRemove as DecorInfo;
-            if (decorInfo.lightObjects && decorInfo.lightObjects.length > 0) {
-                console.log(`   Disposing ${decorInfo.lightObjects.length} associated point lights.`);
-                decorInfo.lightObjects.forEach(light => {
-                    // PointLights don't have geometry/material, but calling dispose is harmless
-                    // and good practice in case future Three.js versions add something.
-                    // light.dispose(); // Technically optional for PointLight
-                    // The light will be removed from the scene when its parent is removed.
-                });
-                decorInfo.lightObjects = []; // Clear the array
-                decorInfo.lightMap?.clear(); // Clear the map
+            // --- Handle Lights BEFORE removing main object ---
+            if (objectType === 'decor') {
+                const decorInfo = objectToRemove as DecorInfo;
+                if (decorInfo.lightObjects && decorInfo.lightObjects.length > 0) {
+                    console.log(`   Disposing ${decorInfo.lightObjects.length} associated point lights.`);
+                    decorInfo.lightObjects.forEach(light => {
+                        // PointLights don't have geometry/material, but calling dispose is harmless
+                        // and good practice in case future Three.js versions add something.
+                        light.dispose(); // Technically optional for PointLight
+                        // The light will be removed from the scene when its parent is removed.
+                    });
+                    decorInfo.lightObjects = []; // Clear the array
+                    decorInfo.lightMap?.clear(); // Clear the map
+                }
             }
+            // --- End Light Handling ---
         }
-        // --- End Light Handling ---
-
         scene.remove(objectToRemove.object3D);
-
         // Dispose geometry and materials
         objectToRemove.object3D.traverse((child) => {
-            if (child instanceof THREE.Mesh) {
+             if (child instanceof THREE.Mesh) {
                 child.geometry?.dispose();
-                console.log(`   Disposed geometry for ${typeId}`);
                 if (child.material) {
                     const materials = Array.isArray(child.material) ? child.material : [child.material];
                     materials.forEach(mat => {
-                        // Dispose textures attached to the material
+                        // Dispose textures
                         Object.keys(mat).forEach(key => {
                             const value = mat[key as keyof THREE.Material];
-                            if (value instanceof THREE.Texture) {
-                                value.dispose();
-                                console.log(`   Disposed texture for ${typeId}`);
-                            }
+                            if (value instanceof THREE.Texture) value.dispose();
                         });
-                        mat.dispose(); // Dispose the material itself
-                        console.log(`   Disposed material for ${typeId}`);
+                        mat.dispose(); // Dispose material
                     });
                 }
             }
         });
         console.log(`   Removed and disposed object3D for ${typeId}`);
-        objectToRemove.object3D = null; // Clear the reference
+        objectToRemove.object3D = null;
     } else {
-        console.warn(`   Object ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}] had no object3D reference to remove/dispose.`);
+         console.warn(`   Object ${typeId} at [${gridPos.row}, ${gridPos.col}] had no object3D reference.`);
     }
 
     // --- 2. Remove from Tracking Sets ---
     if (objectType === 'plant') {
         allPlants.delete(objectToRemove as PlantInfo);
-        updatablePlants.delete(objectToRemove as PlantInfo); // Also remove from growth updates
+        updatablePlants.delete(objectToRemove as PlantInfo);
     } else {
         allDecor.delete(objectToRemove as DecorInfo);
     }
 
     // --- 3. Clear Grid Data ---
-    const { size, gridPos } = objectToRemove;
+    const { size } = objectToRemove;
     for (let rOffset = 0; rOffset < size.rows; rOffset++) {
-		for (let cOffset = 0; cOffset < size.cols; cOffset++) {
-			const targetRow = gridPos.row + rOffset;
-			const targetCol = gridPos.col + cOffset;
-			if (targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
+        for (let cOffset = 0; cOffset < size.cols; cOffset++) {
+            const targetRow = gridPos.row + rOffset;
+            const targetCol = gridPos.col + cOffset;
+            if (targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
                 const cell = gardenGrid[targetRow]?.[targetCol];
-                // Check if clearing the main object or a pointer to it
                 if (cell === objectToRemove || (cell && 'pointerTo' in cell && cell.pointerTo.row === gridPos.row && cell.pointerTo.col === gridPos.col)) {
                     gardenGrid[targetRow][targetCol] = null;
                 }
             }
         }
-	}
+    }
 
-    // --- 4. Save and Render ---
+    // --- 4. Save State ---
     debouncedSaveGardenState();
-    requestRender(); // Request render to show removal
+    // No render request needed here, object is gone.
 }
-// --- End Function to Remove Grid Object ---
 
 // --- Helper to rebuild original material colors AND ensure unique instances ---
-function rebuildOriginalMaterialColors(plantInfo: PlantInfo) {
-    if (!plantInfo.object3D) {
-        console.warn(`Cannot rebuild materials for ${plantInfo.plantTypeId} [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]: object3D is null.`);
+function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo) { // Make generic
+    if (!objectInfo.object3D) {
+        // console.warn(`Cannot rebuild materials for ${objectInfo.typeId} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}]: object3D is null.`);
         return;
     }
 
-    // Create a new map. We are replacing materials, so old references are invalid.
-    plantInfo.originalMaterialColors = new Map<THREE.Material, THREE.Color>();
+    const objectType = 'plantTypeId' in objectInfo ? 'plant' : 'decor';
+    const typeId = objectType === 'plant' ? (objectInfo as PlantInfo).plantTypeId : (objectInfo as DecorInfo).decorTypeId;
+    
+    // Initialize or clear shader uniforms map for this object
+    objectInfo.shaderUniforms = {};
+    // Clear original colors map only for plants (if needed for tinting)
+    if (objectType === 'plant') {
+        (objectInfo as PlantInfo).originalMaterialColors = new Map<THREE.Material, THREE.Color>();
+    }
 
-    console.log(`Rebuilding unique materials for ${plantInfo.plantTypeId} [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]...`);
+    console.log(`Rebuilding unique materials & shaders for ${typeId} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}]...`);
 
-    plantInfo.object3D.traverse((child) => {
+    objectInfo.object3D.traverse((child) => {
         if (child instanceof THREE.Mesh && child.material) {
             const originalMaterials = Array.isArray(child.material) ? child.material : [child.material];
             const newMaterials: THREE.Material[] = [];
             let materialsChanged = false;
 
             originalMaterials.forEach(originalMat => {
-                // Only process standard or basic materials for tinting
+                // Only process standard or basic materials for effects/tinting
                 if (originalMat instanceof THREE.MeshStandardMaterial || originalMat instanceof THREE.MeshBasicMaterial) {
-                    // --- Clone the material to create a unique instance ---
-                    const uniqueMat = originalMat.clone(); // IMPORTANT: Clone the material!
+                    const uniqueMat = originalMat.clone(); // Clone for unique instance
 
-                    // --- Store the ORIGINAL color of this NEW unique instance ---
-                    // We clone the color as well to prevent accidental modifications later
-                    plantInfo.originalMaterialColors!.set(uniqueMat, uniqueMat.color.clone());
+                    // --- Store original color for tinting (Plants only) ---
+                    if (objectType === 'plant') {
+                        (objectInfo as PlantInfo).originalMaterialColors!.set(uniqueMat, uniqueMat.color.clone());
+                    }
+
+                    // --- Setup Shader Uniforms & onBeforeCompile ---
+                    const fadeUniform = { value: 1.0 }; // Start fully visible by default
+                    const waterEffectUniform = { value: 0.0 }; // Start with no water effect
+                    const uniforms: ObjectShaderUniforms = { fade: fadeUniform, waterEffect: waterEffectUniform };
+
+                    // Store reference to uniforms using material's UUID as key
+                    objectInfo.shaderUniforms![uniqueMat.uuid] = uniforms;
+
+                    // Apply the GLSL modifications
+                    uniqueMat.onBeforeCompile = (shader) => {
+                        console.log(`Applying onBeforeCompile to material ${uniqueMat.uuid} for ${typeId}`);
+                        modifyMaterialForEffects(shader, uniforms);
+                        // Optional: Store shader reference if needed later: uniqueMat.userData.shader = shader;
+                    };
+
+                    // IMPORTANT: Ensure material is transparent if fading is used
+                    uniqueMat.transparent = true;
+                    uniqueMat.needsUpdate = true; // Crucial for onBeforeCompile to trigger
 
                     newMaterials.push(uniqueMat);
-                    materialsChanged = true; // Mark that we've replaced at least one material
-                    // console.log(`   Cloned material for mesh ${child.name || child.uuid}`);
+                    materialsChanged = true;
                 } else {
-                    // If it's not a type we modify, keep the original (potentially shared) material
+                    // Keep non-standard materials as they are
                     newMaterials.push(originalMat);
-                    // console.log(`   Kept original (non-tintable) material for mesh ${child.name || child.uuid}`);
                 }
             });
 
-            // --- Assign the new material(s) back to the mesh ---
             if (materialsChanged) {
                 child.material = Array.isArray(child.material) ? newMaterials : newMaterials[0];
-                 // console.log(`   Assigned ${newMaterials.length} new/original materials to mesh ${child.name || child.uuid}`);
             }
         }
     });
 
-    console.log(`   Finished rebuilding. Stored original colors for ${plantInfo.originalMaterialColors.size} unique materials.`);
+    const uniformCount = Object.keys(objectInfo.shaderUniforms).length;
+    console.log(`   Finished rebuilding. Stored ${uniformCount} shader uniforms.`);
+    if (objectType === 'plant') {
+         console.log(`   Stored original colors for ${(objectInfo as PlantInfo).originalMaterialColors!.size} unique materials.`);
+    }
 }
 
 /// --- Function to Place Grid Object (REWRITTEN - With Point Light Creation) ---
@@ -1488,9 +1652,11 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         }
     }
 
-    // --- 4. Set Initial Transform and State (Color, Scale, Rotation etc.) ---
+    // --- 4. Rebuild Materials & Set Initial Transform ---
+    rebuildOriginalMaterialColors(newGridObject); // Apply shader mods & store uniforms
+
+    // Set initial visual state (scale, position, rotation, tint)
     if (objectType === 'plant') {
-        rebuildOriginalMaterialColors(newGridObject as PlantInfo);
         updatePlantVisuals(newGridObject as PlantInfo);
     } else {
         updateDecorVisuals(newGridObject as DecorInfo);
@@ -1554,7 +1720,17 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     }
     // --- End Point Light Creation ---
 
-    // --- 7. Save and Render ---
+    // --- 7. *** START FADE-IN ANIMATION *** ---
+    if (newGridObject.shaderUniforms) {
+        console.log(`Starting fade-in for ${typeId}`);
+        Object.values(newGridObject.shaderUniforms).forEach(uniforms => {
+            uniforms.fade.value = 0.0; // Start invisible
+            animateUniform(uniforms.fade, 1.0, 500); // Animate to 1.0 over 500ms
+        });
+    }
+    // --- End Fade-In ---
+
+    // --- 8. Save and Render ---
     if (!initialState) { // Only save/render if NOT loading from save data
         debouncedSaveGardenState();
         requestRender();
@@ -1594,6 +1770,15 @@ function waterPlantAt(row: number, col: number) {
 			timeUpdated = true;
             // Optional: maybe a visual cue for watering a healthy plant?
 		}
+
+        // --- START WATERING ANIMATION ---
+        if (plantInfo.shaderUniforms) {
+             console.log(`Starting watering effect for ${plantInfo.plantTypeId}`);
+             Object.values(plantInfo.shaderUniforms).forEach(uniforms => {
+                 animateUniformPingPong(uniforms.waterEffect, 1.0, 600); // Animate 0->1->0 over 600ms
+             });
+        }
+        // --- End Watering Animation --
 
 		if (visualStateChanged || timeUpdated) {
             if(visualStateChanged && !isRenderLoopActive){
@@ -2069,6 +2254,7 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 function renderFrame() {
     renderRequested = false;
     animationFrameId = undefined; // Clear the ID tracking this frame
+    const perfNow = performance.now(); // Use performance.now for animations
     const now = new Date();
     const currentMinute = now.getMinutes();
 
@@ -2083,6 +2269,47 @@ function renderFrame() {
     let needsRenderLater = false; // Flag if any visual update happens
     const nowTimestamp = now.getTime();
     const plantsToRemoveFromUpdateList: PlantInfo[] = [];
+
+    // --- Process Active Animations ---
+    const completedAnimationsIndices: number[] = [];
+    activeAnimations.forEach((anim, index) => {
+        const elapsed = perfNow - anim.startTime;
+        let progress = Math.min(1.0, elapsed / anim.duration);
+
+        if (anim.isPingPong) {
+            if (!anim.pingPongReachedPeak) { // Phase 1: start -> peak
+                anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, progress);
+                if (progress >= 1.0) {
+                    anim.pingPongReachedPeak = true;
+                    anim.startTime = perfNow; // Reset time for phase 2
+                    anim.startValue = anim.targetValue; // Start phase 2 from peak
+                    anim.targetValue = 0.0; // Target phase 2 is 0
+                    anim.duration = anim.duration; // Use same duration for second half
+                }
+            } else { // Phase 2: peak -> 0
+                anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, progress);
+                if (progress >= 1.0) {
+                    anim.uniform.value = 0.0; // Ensure end at 0
+                    completedAnimationsIndices.push(index);
+                    if (anim.onComplete) anim.onComplete();
+                }
+            }
+        } else { // Standard animation
+            anim.uniform.value = MathUtils.lerp(anim.startValue, anim.targetValue, progress);
+            if (progress >= 1.0) {
+                anim.uniform.value = anim.targetValue; // Ensure exact end value
+                completedAnimationsIndices.push(index);
+                if (anim.onComplete) anim.onComplete();
+            }
+        }
+        needsRenderLater = true; // Animation updated visuals
+    });
+
+    // Remove completed animations (iterate backwards to avoid index issues)
+    for (let i = completedAnimationsIndices.length - 1; i >= 0; i--) {
+        activeAnimations.splice(completedAnimationsIndices[i], 1);
+    }
+    // --- End Animation Processing ---
 
     // --- Update Growable Plants ---
     for (const plantInfo of updatablePlants) {
@@ -2113,18 +2340,18 @@ function renderFrame() {
             const stageAfterUpdate = getGrowthStageConfig(plantInfo);
 
             if (stageBeforeUpdate && stageAfterUpdate && stageBeforeUpdate.modelPath !== stageAfterUpdate.modelPath) {
-                 console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] changed stage!`);
-                 console.log(`   From: ${stageBeforeUpdate.modelPath} (Prog: ${(plantInfo.growthProgress - 0.001).toFixed(3)})`); // Show approx progress before change
-                 console.log(`   To:   ${stageAfterUpdate.modelPath} (Prog: ${plantInfo.growthProgress.toFixed(3)})`);
+                console.log(`RenderFrame: Plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] changed stage!`);
+                console.log(`   From: ${stageBeforeUpdate.modelPath} (Prog: ${(plantInfo.growthProgress - 0.001).toFixed(3)})`); // Show approx progress before change
+                console.log(`   To:   ${stageAfterUpdate.modelPath} (Prog: ${plantInfo.growthProgress.toFixed(3)})`);
 
-                 // --- SWAP MODEL ---
-                 const swapSuccess = swapPlantModel(plantInfo, stageAfterUpdate.modelPath);
-                 if (swapSuccess) {
+                // --- SWAP MODEL ---
+                const swapSuccess = swapPlantModel(plantInfo, stageAfterUpdate.modelPath);
+                if (swapSuccess) {
                     needsVisualUpdateThisFrame = true; // Ensure visuals are updated with new model
-                 } else {
+                } else {
                     console.error("Model swap failed. Visuals may be incorrect.");
                     // Decide how to handle failure - stop growth? Show placeholder?
-                 }
+                }
             }
 
             // Check if finished growing *after* potential stage swap
@@ -2162,14 +2389,13 @@ function renderFrame() {
     }
 
     // --- Render Scene ---
-    // Render if visuals changed OR day/night changed OR if loop is meant to continue
-    // We render unconditionally within the loop if active,
-    // or if a single frame was requested (renderRequested was true at start)
-    // The needsRenderLater flag isn't strictly necessary with current loop logic but can be useful
-    renderer.render(scene, camera);
+    // Render if visuals changed OR day/night changed OR animations are active
+    if (needsRenderLater || currentMinute !== lastDayNightUpdateMinute || activeAnimations.length > 0) {
+        renderer.render(scene, camera);
+    }
 
     // --- Manage Render Loop ---
-    const shouldContinueLoop = isInteracting; // Continue if dragging
+    const shouldContinueLoop = isInteracting || activeAnimations.length > 0; // Keep loop running if interacting OR animations are active
 
     if (shouldContinueLoop && isRenderLoopActive) {
         // Still active and need to continue
