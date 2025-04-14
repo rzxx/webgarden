@@ -566,6 +566,7 @@ function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader
 
     // Inject vertex shader code
     shader.vertexShader = `
+        uniform float u_fadeProgress;
         uniform float u_waterEffectIntensity;
         varying vec3 v_modelPosition; // Pass model space position
         varying float v_waterEffectIntensity; // Pass intensity to fragment shader
@@ -574,14 +575,21 @@ function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader
     `.replace(
         `#include <begin_vertex>`,
         `#include <begin_vertex>
-        // Pass necessary varyings
-        v_modelPosition = position; // Get position in model space
-        v_waterEffectIntensity = u_waterEffectIntensity; // Pass intensity along
 
-        // Watering scale effect (applied in model space before world transform)
-        // Use the overall eased intensity for scaling
-        float scaleEffect = 1.0 + u_waterEffectIntensity * 0.1; // e.g., 10% bigger at peak intensity
-        transformed *= scaleEffect;
+        v_modelPosition = position; // Pass original model position
+        v_waterEffectIntensity = u_waterEffectIntensity; // Pass water intensity
+
+        // --- Combined Scaling Effects ---
+        // 1. Base scaling for watering effect (pulsing)
+        float waterScaleEffect = 1.0 + u_waterEffectIntensity * 0.1;
+
+        // 2. Scaling based on fade progress (0.0 to 1.0)
+        float fadeScaleEffect = u_fadeProgress; // Directly use fade progress
+
+        // 3. Combine the scales: Multiply the base vertex by both effects
+        // Apply fade scale first, then water pulse scale on top of that
+        transformed *= fadeScaleEffect;
+        transformed *= waterScaleEffect; // Apply watering scale *after* fade scale
         `
     );
 
@@ -646,9 +654,9 @@ function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader
 // --- End GLSL Injection ---
 
 /**
- * Finds the appropriate growth stage configuration based on the plant's current progress.
- */
- function getGrowthStageConfig(plantInfo: PlantInfo): GrowthStage | null {
+* Finds the appropriate growth stage configuration based on the plant's current progress.
+*/
+function getGrowthStageConfig(plantInfo: PlantInfo): GrowthStage | null {
     const config = plantConfigs[plantInfo.plantTypeId] ?? plantConfigs.default;
     if (!config.growthStages || config.growthStages.length === 0) {
         console.error(`Plant type ${plantInfo.plantTypeId} missing growthStages configuration.`);
@@ -1425,7 +1433,7 @@ function removeGridObjectAt(row: number, col: number) {
 
     console.log(`Starting fade-out for ${objectType} ${typeId} at [${objectToRemove.gridPos.row}, ${objectToRemove.gridPos.col}]`);
 
-    const fadeDuration = 300; // ms
+    const FADE_OUT_DURATION = 400; // ms
     let animationsPending = 0;
 
     // --- Callback after ALL fade animations for this object complete ---
@@ -1439,9 +1447,10 @@ function removeGridObjectAt(row: number, col: number) {
 
     // --- Start fade-out for all materials ---
     Object.values(objectToRemove.shaderUniforms ?? {}).forEach(uniforms => {
-        if (uniforms.fade.value > 0.01) { // Only fade if not already faded
+        if (uniforms.fade.value > 0.01) {
             animationsPending++;
-            animateUniform(uniforms.fade, 0.0, fadeDuration, linearEase, onFadeComplete);
+            // Animate fade uniform with easing (e.g., cubic in or power1In)
+            animateUniform(uniforms.fade, 0.0, FADE_OUT_DURATION, power1InEase, onFadeComplete);
         }
     });
 
@@ -1809,9 +1818,11 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     // --- 7. *** START FADE-IN ANIMATION *** ---
     if (newGridObject.shaderUniforms) {
         console.log(`Starting fade-in for ${typeId}`);
+        const FADE_IN_DURATION = 500; // ms
         Object.values(newGridObject.shaderUniforms).forEach(uniforms => {
-            uniforms.fade.value = 0.0; // Start invisible
-            animateUniform(uniforms.fade, 1.0, 500); // Animate to 1.0 over 500ms
+            uniforms.fade.value = 0.0; // Start invisible AND scale 0
+            // Animate fade uniform with easing (e.g., cubic out)
+            animateUniform(uniforms.fade, 1.0, FADE_IN_DURATION, cubicOutEase);
         });
     }
     // --- End Fade-In ---
@@ -1868,7 +1879,7 @@ function waterPlantAt(row: number, col: number) {
 
                 // 2. Animate Progress (Linear Top-to-Bottom)
                 uniforms.waterProgress.value = 0.0; // Reset progress
-                animateUniform(uniforms.waterProgress, 1.0, waterAnimDuration, linearEase, () => {
+                animateUniform(uniforms.waterProgress, 1.0, waterAnimDuration, cubicOutEase, () => {
                     // Optional: reset progress after completion if desired
                     uniforms.waterProgress.value = 0.0;
                 });
@@ -2589,8 +2600,8 @@ onMount(() => {
 	ground.receiveShadow = true;
 	scene.add(ground);
 
-    const gridLineColor = new THREE.Color(0x888888);
-    const centerLineColor = new THREE.Color(0x777777);
+    const gridLineColor = new THREE.Color(0x666666);
+    const centerLineColor = new THREE.Color(0x666666);
 
 	gridHelper = new THREE.GridHelper(PLANE_SIZE, GRID_DIVISIONS, centerLineColor, gridLineColor);
 	gridHelper.position.y = 0.01; // Slightly above ground
