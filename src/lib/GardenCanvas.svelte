@@ -488,7 +488,7 @@ function calculateSegmentProgress(cycleProgress: number, startPoint: number, end
 }
 
 /// --- Helper: Extract Geometry/Material and Calculate Scale from GLTF (Improved Centering & Normalization) ---
-function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 1.0): CachedGltfData | null {
+function extractAndPrepareGltfData(gltfScene: THREE.Group, modelPath: string, targetSize: number = 1.0): CachedGltfData | null {
     let modelNormalizationScale = 1.0;
     let centerOffsetX = 0;
     let centerOffsetY = 0;
@@ -512,7 +512,6 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
     modelMaxY = box.max.y;
     // --- End Store Bounds ---
 
-
     if (size.x === 0 && size.y === 0 && size.z === 0) {
         console.warn("GLTF scene bounding box is zero. Using default scale/offset.", gltfScene);
     } else {
@@ -529,7 +528,7 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, targetSize: number = 
         centerOffsetX = -center.x;
         centerOffsetZ = -center.z;
 
-        // console.log(`GLTF Prep: Path=${gltfScene.userData.path || 'N/A'}`);
+        // console.log(`GLTF Prep: Path=${modelPath || 'N/A'}`);
         // console.log(`  Orig Bounds Y: [${modelMinY.toFixed(2)}, ${modelMaxY.toFixed(2)}]`); // Log bounds
     }
 
@@ -734,6 +733,14 @@ function initializeGrid() {
 	console.log("Initialized Grid:", gardenGrid);
 }
 
+// --- Helper function to stop animation for a specific uniform ---
+function stopAnimationForUniform(uniform: { value: number }) {
+    const index = activeAnimations.findIndex(a => a.uniform === uniform);
+    if (index > -1) {
+        activeAnimations.splice(index, 1);
+    }
+}
+
 /**
  * Swaps the 3D model for a plant instance.
  * Removes the old model, clones the new one, adds it, and updates plantInfo.
@@ -757,6 +764,16 @@ function initializeGrid() {
 
     // --- 2. Remove and Dispose Old Model (if exists) ---
     if (oldObject) {
+        // --- Stop animations associated with the OLD object ---
+        if (plantInfo.shaderUniforms) {
+            console.log(`   Clearing animations for old model of ${plantInfo.plantTypeId}`);
+            Object.values(plantInfo.shaderUniforms).forEach(uniforms => {
+                stopAnimationForUniform(uniforms.fade);
+                stopAnimationForUniform(uniforms.waterEffect);
+                stopAnimationForUniform(uniforms.waterProgress);
+                // Add any other animated uniforms here
+            });
+        }
         scene.remove(oldObject); // Remove from scene first
 
         // Dispose geometry and materials of the old object
@@ -780,6 +797,7 @@ function initializeGrid() {
          console.log(`   Disposed old model for ${plantInfo.plantTypeId}`);
         plantInfo.object3D = null; // Clear reference temporarily
         plantInfo.originalMaterialColors = undefined; // Clear old color map
+        plantInfo.shaderUniforms = undefined; // Clear old shader uniforms map too
     } else {
          console.warn(`swapPlantModel: Plant ${plantInfo.plantTypeId} had no existing object3D to remove.`);
     }
@@ -798,13 +816,15 @@ function initializeGrid() {
     // --- 5. Rebuild Material Map & Apply Visuals ---
     // Rebuild map *before* applying tint in updatePlantVisuals
     rebuildOriginalMaterialColors(plantInfo, newModelPath);
-    // Update visuals (position, scale, tint) based on current state and *new* model data
-    updatePlantVisuals(plantInfo); // This will use the new object3D and its corresponding cached data
-
     // --- 6. Add New Model to Scene ---
-    scene.add(newObject);
-    console.log(`   Successfully swapped to model ${newModelPath}`);
+    scene.add(newObject); // Add to scene BEFORE first visual update
 
+    // --- 7. Update Visuals (Position, Scale, AND Tint) for the NEW model ---
+    // This call now happens AFTER rebuild and AFTER adding to scene.
+    // It will use the newly rebuilt originalMaterialColors and the current plantInfo.state
+    updatePlantVisuals(plantInfo);
+    console.log(`   Successfully swapped to model ${newModelPath} for ${plantInfo.plantTypeId}`);
+    requestRender(); // Ensure the newly swapped and positioned model is drawn
     return true; // Success
 }
 
@@ -1464,11 +1484,11 @@ function removeGridObjectAt(row: number, col: number) {
 
 // --- Helper for the actual removal steps (called after fade-out) ---
 function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
-     const objectType = 'plantTypeId' in objectToRemove ? 'plant' : 'decor';
-     const typeId = objectType === 'plant' ? (objectToRemove as PlantInfo).plantTypeId : (objectToRemove as DecorInfo).decorTypeId;
-     const gridPos = objectToRemove.gridPos; // Capture before potential modification
+    const objectType = 'plantTypeId' in objectToRemove ? 'plant' : 'decor';
+    const typeId = objectType === 'plant' ? (objectToRemove as PlantInfo).plantTypeId : (objectToRemove as DecorInfo).decorTypeId;
+    const gridPos = objectToRemove.gridPos; // Capture before potential modification
 
-     console.log(`Performing immediate removal of ${typeId} at [${gridPos.row}, ${gridPos.col}]`);
+    console.log(`Performing immediate removal of ${typeId} at [${gridPos.row}, ${gridPos.col}]`);
 
     // --- 1. Remove Object3D from Scene and Dispose ---
     if (objectToRemove.object3D) {
@@ -1495,6 +1515,7 @@ function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
         // Dispose geometry and materials
         objectToRemove.object3D.traverse((child) => {
              if (child instanceof THREE.Mesh) {
+                child.customDepthMaterial?.dispose();
                 child.geometry?.dispose();
                 if (child.material) {
                     const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -1544,12 +1565,11 @@ function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
 }
 
 // --- Helper to rebuild original material colors AND ensure unique instances ---
-// MODIFIED: Accepts modelPath to fetch correct cached data
 function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelPath: string) {
     if (!objectInfo.object3D) {
+        console.warn(`Cannot rebuild materials for object at [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}]: object3D is null.`);
         return;
     }
-    // Fetch cached data for the SPECIFIC model being used
     const cachedGltfData = gltfCache[modelPath];
     if (!cachedGltfData) {
         console.error(`rebuildOriginalMaterialColors: Missing cached data for model ${modelPath}. Cannot setup shaders correctly.`);
@@ -1575,46 +1595,102 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelP
 
             originalMaterials.forEach(originalMat => {
                 if (originalMat instanceof THREE.MeshStandardMaterial || originalMat instanceof THREE.MeshBasicMaterial) {
-                    const uniqueMat = originalMat.clone();
+                    const uniqueMat = originalMat.clone(); // Clone main material
 
                     if (objectType === 'plant') {
                         (objectInfo as PlantInfo).originalMaterialColors!.set(uniqueMat, uniqueMat.color.clone());
                     }
 
-                    // --- Create ALL Shader Uniforms ---
+                    // --- Create ALL Shader Uniforms for THIS material instance ---
+                    // Capture this specific 'uniforms' object in the closure below
                     const uniforms: ObjectShaderUniforms = {
                         fade: { value: 1.0 },
                         waterEffect: { value: 0.0 },
-                        waterProgress: { value: 0.0 }, // Default progress
-                        // Fetch bounds from the correct cached data
+                        waterProgress: { value: 0.0 },
                         modelMinY: { value: cachedGltfData.modelMinY },
                         modelMaxY: { value: cachedGltfData.modelMaxY },
-                        waterEffectWidth: { value: 0.15 } // Default width (adjust as needed)
+                        waterEffectWidth: { value: 0.15 }
                     };
+                    objectInfo.shaderUniforms![uniqueMat.uuid] = uniforms; // Store reference
 
-                    objectInfo.shaderUniforms![uniqueMat.uuid] = uniforms;
-
+                    // --- Setup Main Material Shader ---
                     uniqueMat.onBeforeCompile = (shader) => {
-                        console.log(`Applying onBeforeCompile to material ${uniqueMat.uuid} for ${typeId}`);
-                        // Pass the COMPLETE uniforms object for this specific material
+                        console.log(`Applying onBeforeCompile to MAIN material ${uniqueMat.uuid} for ${typeId}`);
+                        // Pass the uniforms object created in this loop iteration
                         modifyMaterialForEffects(shader, uniforms);
                     };
-
-                    uniqueMat.transparent = true; // Needs transparency for fade and potentially brightness effects
+                    uniqueMat.transparent = true;
                     uniqueMat.needsUpdate = true;
-
                     newMaterials.push(uniqueMat);
                     materialsChanged = true;
+
+                    // --- Create Custom Shadow Material ---
+                    const shadowMaterial = new THREE.MeshDepthMaterial({
+                        depthPacking: THREE.RGBADepthPacking,
+                         // alphaTest: 0.01 // May be needed if your fade can create holes transparently
+                    });
+                    shadowMaterial.name = `shadowMat_${uniqueMat.uuid}`; // Add name for debugging
+
+                    // --- Setup Shadow Material Shader (using closure) ---
+                    shadowMaterial.onBeforeCompile = (shader) => {
+                        console.log(`Applying onBeforeCompile to SHADOW material for ${typeId} (linked to main ${uniqueMat.uuid})`);
+
+                        // 'uniforms' below refers to the 'uniforms' object created
+                        // just above for this specific main material instance,
+                        // captured by this closure.
+                        if (uniforms && uniforms.fade && uniforms.waterEffect) {
+                             // 1. Link the JS uniform objects to the shader program
+                            shader.uniforms.u_fadeProgress = uniforms.fade;
+                            shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect;
+                             // We don't need waterProgress, modelY etc. for just scaling shadows
+
+                             // 2. Inject GLSL uniform declarations and scaling logic
+                            shader.vertexShader = `
+                                // Declare the uniforms we're using
+                                uniform float u_fadeProgress;
+                                uniform float u_waterEffectIntensity;
+
+                                ${shader.vertexShader} // Original shadow vertex shader
+                            `.replace(
+                                `#include <begin_vertex>`,
+                                `#include <begin_vertex>
+                                // --- Apply the SAME scaling logic as the main shader ---
+                                // Note: Using water effect scale here means shadows pulse too. Remove if unwanted.
+                                float waterScaleEffect = 1.0 + u_waterEffectIntensity * 0.1;
+                                float fadeScaleEffect = u_fadeProgress;
+
+                                // Apply combined scale
+                                transformed *= fadeScaleEffect;
+                                transformed *= waterScaleEffect;
+                                `
+                            );
+                            // No fragment shader modification usually needed for MeshDepthMaterial
+
+                        } else {
+                            // This should ideally not happen with the closure approach unless 'uniforms' itself is bad
+                            console.error(`!!! Critical Error: Could not link shadow uniforms via closure for main mat ${uniqueMat.uuid}. 'uniforms' object was faulty.`);
+                            // You might want to add fallback default values here if this case is possible
+                            // shader.uniforms.u_fadeProgress = { value: 1.0 }; // Example fallback
+                        }
+                    };
+                    shadowMaterial.needsUpdate = true;
+
+                    // --- Assign Shadow Material to the Mesh ---
+                    child.customDepthMaterial = shadowMaterial;
+                    // If using point lights, you might also need customDistanceMaterial
+                    // child.customDistanceMaterial = shadowMaterial.clone(); // Needs its own onBeforeCompile setup too!
+
                 } else {
+                    // Keep non-standard materials as they are (no custom shaders/shadows)
                     newMaterials.push(originalMat);
                 }
-            });
+            }); // End originalMaterials.forEach
 
             if (materialsChanged) {
                 child.material = Array.isArray(child.material) ? newMaterials : newMaterials[0];
             }
-        }
-    });
+        } // End if child is Mesh
+    }); // End objectInfo.object3D.traverse
 
     const uniformCount = Object.keys(objectInfo.shaderUniforms).length;
     console.log(`   Finished rebuilding. Stored ${uniformCount} shader uniforms.`);
@@ -2169,7 +2245,7 @@ async function loadAssets() {
                 if (stage.modelPath) {
                     modelPathsToLoad.add(stage.modelPath);
                 } else {
-                     console.warn(`Plant config ${typeId} has a growth stage missing a modelPath.`);
+                    console.warn(`Plant config ${typeId} has a growth stage missing a modelPath.`);
                 }
             });
         } else {
@@ -2197,7 +2273,7 @@ async function loadAssets() {
                         let targetSize = 1.0; // Default normalization target
 
                         // --- Use extractAndPrepareGltfData (no changes needed here) ---
-                        const preparedData = extractAndPrepareGltfData(gltf.scene, targetSize);
+                        const preparedData = extractAndPrepareGltfData(gltf.scene, modelPath, targetSize);
                         if (preparedData) {
                             gltfCache[modelPath] = preparedData;
                         } else {
@@ -2334,21 +2410,26 @@ function loadGardenState() {
 
 // performs render on window resize
 function performResize() {
-		if (!container || !renderer || !camera) return;
-		const width = container.clientWidth;
-		const height = container.clientHeight;
-		const scaleX = width / gardenVisibleSize;
-		const scaleY = height / gardenVisibleSize;
-		const scale = Math.min(scaleX, scaleY);
-		const frustumWidth = width / scale;
-		const frustumHeight = height / scale;
-		camera.left = -frustumWidth / 2;
-		camera.right = frustumWidth / 2;
-		camera.top = frustumHeight / 2;
-		camera.bottom = -frustumHeight / 2;
-		camera.updateProjectionMatrix();
-		renderer.setSize(width, height);
-		requestRender(); // Request a frame to show the resized view
+    if (!container || !renderer || !camera || !scene) return; // scene check
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    // Check for zero size (can happen during complex layout shifts or initialization)
+    if (width === 0 || height === 0) {
+        console.warn("Resize skipped: Container dimensions are zero.");
+        return;
+    }
+
+    const aspect = width / height;
+    const desiredVerticalSize = gardenVisibleSize; // Or adjust based on zoom later
+    camera.top = desiredVerticalSize / 2;
+    camera.bottom = -desiredVerticalSize / 2;
+    camera.left = -desiredVerticalSize * aspect / 2;
+    camera.right = desiredVerticalSize * aspect / 2;
+
+    camera.updateProjectionMatrix();
+    renderer.setSize(width, height);
+    renderer.render(scene, camera);
 }
 // debounced resizeHandler
 const resizeHandler = debounce(performResize, 150);
@@ -2368,6 +2449,7 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 function renderFrame() {
     renderRequested = false;
     animationFrameId = undefined; // Clear the ID tracking this frame
+    let needsRenderLater = false; // Flag if any visual update happens
     const perfNow = performance.now(); // Use performance.now for animations
     const now = new Date();
     const currentMinute = now.getMinutes();
@@ -2376,11 +2458,11 @@ function renderFrame() {
     if (currentMinute !== lastDayNightUpdateMinute) {
         updateDayNightCycle(now);
         lastDayNightUpdateMinute = currentMinute;
+        needsRenderLater = true; // <-- ADD THIS LINE
         // Day/night change always requires a render, but renderFrame is already running
     }
 
     let needsSave = false;
-    let needsRenderLater = false; // Flag if any visual update happens
     const nowTimestamp = now.getTime();
     const plantsToRemoveFromUpdateList: PlantInfo[] = [];
 
@@ -2512,26 +2594,38 @@ function renderFrame() {
     }
 
     // --- Render Scene ---
-    // Render if visuals changed OR day/night changed OR animations are active
-    if (needsRenderLater || currentMinute !== lastDayNightUpdateMinute || activeAnimations.length > 0) {
+    if (needsRenderLater || activeAnimations.length > 0 || isInteracting) {
+        // Add a check for preview box visibility too for sanity
+        // console.log("Rendering. Preview visible:", previewGroup?.visible);
         renderer.render(scene, camera);
+        needsRenderLater = true; // Ensure loop logic considers this render happened
+    } else {
+        needsRenderLater = false; // Nothing required rendering this frame
     }
 
     // --- Manage Render Loop ---
-    const shouldContinueLoop = isInteracting || activeAnimations.length > 0; // Keep loop running if interacting OR animations are active
+    const loopShouldBeActive = isInteracting || activeAnimations.length > 0;
 
-    if (shouldContinueLoop && isRenderLoopActive) {
-        // Still active and need to continue
-        animationFrameId = requestAnimationFrame(renderFrame);
-    } else if (shouldContinueLoop && !isRenderLoopActive) {
-        // Was inactive, but now needs to be active
-        startRenderLoop(); // This will request the next frame
+    if (loopShouldBeActive) {
+        // If the loop should be active...
+        if (!isRenderLoopActive) {
+            // ...but it isn't, start it.
+            startRenderLoop(); // startRenderLoop handles requesting the next frame
+        } else {
+            // ...and it is active, request the next frame directly.
+            animationFrameId = requestAnimationFrame(renderFrame);
+        }
+    } else {
+        // If the loop should NOT be active...
+        if (isRenderLoopActive) {
+            // ...but it is, stop it.
+            stopRenderLoop();
+        }
+        // ...and it's not active, do nothing (loop remains stopped).
     }
-    else if (!shouldContinueLoop && isRenderLoopActive) {
-        // Was active, but interaction stopped AND no plants are growing
-        stopRenderLoop(); // Transition back to background checks
-    }
-    // If !shouldContinueLoop and !isRenderLoopActive -> Was a single frame request, loop ends naturally.
+
+    // Ensure renderRequested is false as we've processed this frame's potential render
+    renderRequested = false;
 }
 // --- End renderFrame ---
 
