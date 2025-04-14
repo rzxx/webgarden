@@ -8,6 +8,11 @@ import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
 import { DRACOLoader } from 'three-stdlib';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // Import SkeletonUtils for cloning
 
+// Toon Shading Gradient Map
+const toonGradientMap = new THREE.TextureLoader().load('/threeTone.jpg')
+toonGradientMap.minFilter = THREE.NearestFilter
+toonGradientMap.magFilter = THREE.NearestFilter
+
 // --- Plant Configuration ---
 interface GrowthStage {
     maxGrowth: number; // The progress value *up to which* this stage applies (inclusive)
@@ -189,7 +194,7 @@ const HALF_PLANE_SIZE = PLANE_SIZE / 2;
 const gardenVisibleSize = 30;
 
 // --- NEW: Define placeholder materials (if models aren't found) ---
-const placeholderMaterial = new THREE.MeshStandardMaterial({ color: 0x800080 }); // Purple
+const placeholderMaterial = new THREE.MeshToonMaterial({ color: 0x800080, gradientMap: toonGradientMap }); // Purple
 const placeholderGeometry = new THREE.BoxGeometry(CELL_SIZE * 0.5, CELL_SIZE * 0.5, CELL_SIZE * 0.5);
 // --- End Placeholder ---
 
@@ -255,13 +260,6 @@ let invalidPlacementMaterial: THREE.MeshBasicMaterial;
 let lastPreviewGridPos: { row: number; col: number } | null = null;
 const THROTTLE_DRAGOVER_MS = 75;
 // --- End Bounding Boxes ---
-
-// --- Placeholder Object Geometry/Materials ---
-const healthyMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff });
-const thirstyMaterial = new THREE.MeshStandardMaterial({ color: 0xa0a0a0 });
-const healthyColor = new THREE.Color(healthyMaterial.color); // Get base colors
-const thirstyColor = new THREE.Color(thirstyMaterial.color);
-// --- End Placeholder Materials ---
 
 // --- State variables to track pointer drag ---
 let currentHeldItem: HeldItemInfo | null = null;
@@ -1594,97 +1592,102 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelP
             let materialsChanged = false;
 
             originalMaterials.forEach(originalMat => {
-                if (originalMat instanceof THREE.MeshStandardMaterial || originalMat instanceof THREE.MeshBasicMaterial) {
-                    const uniqueMat = originalMat.clone(); // Clone main material
+                if (originalMat instanceof THREE.MeshStandardMaterial ||
+                originalMat instanceof THREE.MeshBasicMaterial ||
+                originalMat instanceof THREE.MeshPhysicalMaterial // Add others if needed
+                ) {
+                    // --- Create NEW MeshToonMaterial ---
+                    const toonMaterial = new THREE.MeshToonMaterial();
 
+                    // --- Copy Essential Properties from Original ---
+                    toonMaterial.color.copy(originalMat.color);
+                    toonMaterial.map = originalMat.map; // Copy texture map if it exists
+                    // Copy other maps if your models use them (normal, ao, emissive, etc.)
+                    // toonMaterial.normalMap = (originalMat as THREE.MeshStandardMaterial).normalMap;
+                    // toonMaterial.aoMap = (originalMat as THREE.MeshStandardMaterial).aoMap;
+                    // ... etc.
+
+                    toonMaterial.name = originalMat.name + '_toon'; // Optional: for debugging
+                    toonMaterial.side = originalMat.side; // Important if using DoubleSide etc.
+                    toonMaterial.transparent = true; // REQUIRED for fade/shader effects
+                    toonMaterial.wireframe = originalMat.wireframe;
+                    toonMaterial.gradientMap = toonGradientMap;
+
+                    // --- Store Original Color for Tinting (Plants Only) ---
                     if (objectType === 'plant') {
-                        (objectInfo as PlantInfo).originalMaterialColors!.set(uniqueMat, uniqueMat.color.clone());
+                        // Store the toon material instance and its base color
+                        (objectInfo as PlantInfo).originalMaterialColors!.set(toonMaterial, toonMaterial.color.clone());
                     }
 
-                    // --- Create ALL Shader Uniforms for THIS material instance ---
-                    // Capture this specific 'uniforms' object in the closure below
+                    // --- Create ALL Shader Uniforms for THIS Toon material instance ---
                     const uniforms: ObjectShaderUniforms = {
                         fade: { value: 1.0 },
                         waterEffect: { value: 0.0 },
                         waterProgress: { value: 0.0 },
                         modelMinY: { value: cachedGltfData.modelMinY },
                         modelMaxY: { value: cachedGltfData.modelMaxY },
-                        waterEffectWidth: { value: 0.15 }
+                        waterEffectWidth: { value: 0.15 } // Example value
                     };
-                    objectInfo.shaderUniforms![uniqueMat.uuid] = uniforms; // Store reference
+                    // Store uniforms keyed by the NEW toonMaterial's UUID
+                    objectInfo.shaderUniforms![toonMaterial.uuid] = uniforms;
 
-                    // --- Setup Main Material Shader ---
-                    uniqueMat.onBeforeCompile = (shader) => {
-                        console.log(`Applying onBeforeCompile to MAIN material ${uniqueMat.uuid} for ${typeId}`);
-                        // Pass the uniforms object created in this loop iteration
+                    // --- Setup Main Material Shader (onBeforeCompile on the Toon Material) ---
+                    toonMaterial.onBeforeCompile = (shader) => {
+                        console.log(`Applying onBeforeCompile to TOON material ${toonMaterial.uuid} for ${typeId}`);
+                        // Pass the uniforms object created above
                         modifyMaterialForEffects(shader, uniforms);
                     };
-                    uniqueMat.transparent = true;
-                    uniqueMat.needsUpdate = true;
-                    newMaterials.push(uniqueMat);
+
+                    // Mark for recompilation
+                    toonMaterial.needsUpdate = true;
+
+                    // Add the new toon material to the list for this mesh
+                    newMaterials.push(toonMaterial);
                     materialsChanged = true;
 
-                    // --- Create Custom Shadow Material ---
+                    // --- Create Custom Shadow Material (Logic remains similar) ---
+                    // Still use MeshDepthMaterial for shadows
                     const shadowMaterial = new THREE.MeshDepthMaterial({
                         depthPacking: THREE.RGBADepthPacking,
-                         // alphaTest: 0.01 // May be needed if your fade can create holes transparently
+                        // alphaTest: 0.01 // Potentially needed if fade creates transparent holes
                     });
-                    shadowMaterial.name = `shadowMat_${uniqueMat.uuid}`; // Add name for debugging
+                    // Link shadow material name to the TOON material's UUID for easier debugging
+                    shadowMaterial.name = `shadowMat_${toonMaterial.uuid}`;
 
-                    // --- Setup Shadow Material Shader (using closure) ---
+                    // --- Setup Shadow Material Shader (using the SAME uniforms instance) ---
                     shadowMaterial.onBeforeCompile = (shader) => {
-                        console.log(`Applying onBeforeCompile to SHADOW material for ${typeId} (linked to main ${uniqueMat.uuid})`);
-
-                        // 'uniforms' below refers to the 'uniforms' object created
-                        // just above for this specific main material instance,
-                        // captured by this closure.
+                        console.log(`Applying onBeforeCompile to SHADOW material for ${typeId} (linked to toon ${toonMaterial.uuid})`);
                         if (uniforms && uniforms.fade && uniforms.waterEffect) {
-                             // 1. Link the JS uniform objects to the shader program
                             shader.uniforms.u_fadeProgress = uniforms.fade;
                             shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect;
-                             // We don't need waterProgress, modelY etc. for just scaling shadows
-
-                             // 2. Inject GLSL uniform declarations and scaling logic
                             shader.vertexShader = `
-                                // Declare the uniforms we're using
                                 uniform float u_fadeProgress;
                                 uniform float u_waterEffectIntensity;
-
-                                ${shader.vertexShader} // Original shadow vertex shader
+                                ${shader.vertexShader}
                             `.replace(
                                 `#include <begin_vertex>`,
                                 `#include <begin_vertex>
-                                // --- Apply the SAME scaling logic as the main shader ---
-                                // Note: Using water effect scale here means shadows pulse too. Remove if unwanted.
                                 float waterScaleEffect = 1.0 + u_waterEffectIntensity * 0.1;
                                 float fadeScaleEffect = u_fadeProgress;
-
-                                // Apply combined scale
                                 transformed *= fadeScaleEffect;
                                 transformed *= waterScaleEffect;
                                 `
                             );
-                            // No fragment shader modification usually needed for MeshDepthMaterial
-
                         } else {
-                            // This should ideally not happen with the closure approach unless 'uniforms' itself is bad
-                            console.error(`!!! Critical Error: Could not link shadow uniforms via closure for main mat ${uniqueMat.uuid}. 'uniforms' object was faulty.`);
-                            // You might want to add fallback default values here if this case is possible
-                            // shader.uniforms.u_fadeProgress = { value: 1.0 }; // Example fallback
+                            console.error(`!!! Critical Error: Could not link shadow uniforms via closure for toon mat ${toonMaterial.uuid}.`);
                         }
                     };
                     shadowMaterial.needsUpdate = true;
 
-                    // --- Assign Shadow Material to the Mesh ---
+                    // Assign shadow material
                     child.customDepthMaterial = shadowMaterial;
-                    // If using point lights, you might also need customDistanceMaterial
-                    // child.customDistanceMaterial = shadowMaterial.clone(); // Needs its own onBeforeCompile setup too!
 
                 } else {
-                    // Keep non-standard materials as they are (no custom shaders/shadows)
+                    // Keep non-standard materials (e.g., LineBasicMaterial, PointsMaterial) as they are
+                    console.log(`Keeping original material type for mesh ${child.name}: ${originalMat.type}`);
                     newMaterials.push(originalMat);
                 }
-            }); // End originalMaterials.forEach
+                }); // End originalMaterials.forEach
 
             if (materialsChanged) {
                 child.material = Array.isArray(child.material) ? newMaterials : newMaterials[0];
@@ -2725,7 +2728,7 @@ onMount(() => {
 
 	// --- Ground and Grid Helper (Keep as is) ---
 	const groundGeometry = new THREE.PlaneGeometry(PLANE_SIZE, PLANE_SIZE);
-	const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x5C946E, side: THREE.DoubleSide });
+	const groundMaterial = new THREE.MeshToonMaterial({ color: 0x5C946E, side: THREE.DoubleSide, gradientMap: toonGradientMap });
 	ground = new THREE.Mesh(groundGeometry, groundMaterial);
 	ground.rotation.x = -Math.PI / 2;
 	ground.position.y = -0.01;
