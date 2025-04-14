@@ -42,7 +42,7 @@ const plantConfigs: Record<string, PlantConfig> = {
         thirstThresholdSeconds: 60 * 1,
         size: { rows: 1, cols: 1 },
         healthyColorTint: new THREE.Color(0xffffff),
-        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        thirstyColorTint: new THREE.Color(0x6a6a6a),
         growthStages: [
             { maxGrowth: 0.25, modelPath: '/models/seed.glb' },
             { maxGrowth: 1.00, modelPath: '/models/fern.glb' }
@@ -55,7 +55,7 @@ const plantConfigs: Record<string, PlantConfig> = {
         thirstThresholdSeconds: 60 * 10,
         size: { rows: 1, cols: 1 },
         healthyColorTint: new THREE.Color(0xffffff),
-        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        thirstyColorTint: new THREE.Color(0x6a6a6a),
         growthStages: [
             { maxGrowth: 0.50, modelPath: '/models/seed.glb' },
             { maxGrowth: 1.00, modelPath: '/models/cactus.glb' }
@@ -68,7 +68,7 @@ const plantConfigs: Record<string, PlantConfig> = {
         thirstThresholdSeconds: 60 * 8,
         size: { rows: 2, cols: 2 },
         healthyColorTint: new THREE.Color(0xffffff),
-        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        thirstyColorTint: new THREE.Color(0x8a8a8a),
         growthStages: [
             { maxGrowth: 0.10, modelPath: '/models/seed.glb' },
             { maxGrowth: 0.50, modelPath: '/models/bush_early.glb' },
@@ -83,7 +83,7 @@ const plantConfigs: Record<string, PlantConfig> = {
         thirstThresholdSeconds: 60 * 5,
         size: { rows: 1, cols: 1 },
         healthyColorTint: new THREE.Color(0xffffff),
-        thirstyColorTint: new THREE.Color(0xa0a0a0),
+        thirstyColorTint: new THREE.Color(0x6a6a6a),
         growthStages: [
              { maxGrowth: 1.00, modelPath: '/models/fern.glb' } // Default uses box
         ]
@@ -190,8 +190,8 @@ const PLANE_SIZE = 20;
 const GRID_DIVISIONS = 10;
 const CELL_SIZE = PLANE_SIZE / GRID_DIVISIONS;
 const HALF_PLANE_SIZE = PLANE_SIZE / 2;
-
-const gardenVisibleSize = 30;
+// Optional padding factor (e.g., 1.1 for 10% padding around the content)
+const PADDING_FACTOR = 1.5;
 
 // --- NEW: Define placeholder materials (if models aren't found) ---
 const placeholderMaterial = new THREE.MeshToonMaterial({ color: 0x800080, gradientMap: toonGradientMap }); // Purple
@@ -894,17 +894,16 @@ function updatePlantVisuals(plantInfo: PlantInfo) {
     // plantInfo.object3D.rotation.set(0, 0, 0); // Keep existing rotation
 
     // --- 2. Update Material Color (Tinting) ---
-    // (Keep the existing, corrected tinting logic using unique materials)
     const targetColor = plantInfo.state === 'needs_water'
         ? (config.thirstyColorTint ?? new THREE.Color(0xaaaaaa))
         : (config.healthyColorTint ?? new THREE.Color(0xffffff));
 
     if (!plantInfo.originalMaterialColors) {
         console.warn(`Plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] missing originalMaterialColors map for tinting. Rebuilding...`);
-        rebuildOriginalMaterialColors(plantInfo, currentStage.modelPath);
+        rebuildOriginalMaterialColors(plantInfo, currentStage.modelPath); // Assuming currentStage.modelPath is correct
         if (!plantInfo.originalMaterialColors) {
-             console.error(`   Failed to rebuild originalMaterialColors. Tinting skipped.`);
-             return; // Skip tinting if rebuild failed
+            console.error(`   Failed to rebuild originalMaterialColors. Tinting skipped.`);
+            return; // Skip tinting if rebuild failed
         }
     }
 
@@ -912,16 +911,25 @@ function updatePlantVisuals(plantInfo: PlantInfo) {
         if (child instanceof THREE.Mesh && child.material) {
             const materials = Array.isArray(child.material) ? child.material : [child.material];
             materials.forEach((mat) => {
-                if (plantInfo.originalMaterialColors!.has(mat) && (mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
+                // *** MODIFIED CONDITION BELOW ***
+                if (plantInfo.originalMaterialColors!.has(mat) &&
+                    (mat instanceof THREE.MeshStandardMaterial || // Keep for potential fallback/mixed materials
+                    mat instanceof THREE.MeshBasicMaterial ||   // Keep for potential fallback/mixed materials
+                    mat instanceof THREE.MeshToonMaterial)) { // *** ADDED THIS CHECK ***
+
                     const originalColor = plantInfo.originalMaterialColors!.get(mat)!;
-                    tempColor.copy(originalColor).multiply(targetColor);
+                    tempColor.copy(originalColor).multiply(targetColor); // Tinting logic remains the same
+
+                    // Check if update is needed to avoid unnecessary work
                     if (!mat.color.equals(tempColor)) {
-                         mat.color.copy(tempColor);
-                         mat.needsUpdate = true;
+                        mat.color.copy(tempColor);
+                        mat.needsUpdate = true; // Good practice, though THREE often detects changes
                     }
-                } else if ((mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshBasicMaterial)) {
-                     // console.warn(`Material on ${plantInfo.plantTypeId} not found in originalMaterialColors map during tinting.`); // Less noisy
+                } else if (mat instanceof THREE.MeshToonMaterial) { // Added for debugging: is it a Toon material not in the map?
+                    // This might indicate an issue in rebuildOriginalMaterialColors if it logs frequently
+                    // console.warn(`Toon Material on ${plantInfo.plantTypeId} not found in originalMaterialColors map during tinting. UUID: ${mat.uuid}`);
                 }
+                // We don't need an else if for standard/basic here as the primary if handles them if they ARE in the map.
             });
         }
     });
@@ -2451,25 +2459,66 @@ function loadGardenState() {
 
 // performs render on window resize
 function performResize() {
-    if (!container || !renderer || !camera || !scene) return; // scene check
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+    // Ensure necessary components exist
+    if (!container || !renderer || !camera || !scene) {
+        console.warn("Resize skipped: Missing required components.");
+        return;
+    }
 
-    // Check for zero size (can happen during complex layout shifts or initialization)
-    if (width === 0 || height === 0) {
+    // Ensure PLANE_SIZE is available in this scope
+    if (typeof PLANE_SIZE === 'undefined') {
+         console.error("Resize skipped: PLANE_SIZE is not defined or accessible in the scope of performResize.");
+         return;
+    }
+
+    const screenWidth = container.clientWidth;
+    const screenHeight = container.clientHeight;
+
+    // Check for zero size
+    if (screenWidth === 0 || screenHeight === 0) {
         console.warn("Resize skipped: Container dimensions are zero.");
         return;
     }
 
-    const aspect = width / height;
-    const desiredVerticalSize = gardenVisibleSize; // Or adjust based on zoom later
-    camera.top = desiredVerticalSize / 2;
-    camera.bottom = -desiredVerticalSize / 2;
-    camera.left = -desiredVerticalSize * aspect / 2;
-    camera.right = desiredVerticalSize * aspect / 2;
+    const screenAspect = screenWidth / screenHeight;
 
+    // --- Automatically determine content dimensions based on the plane ---
+    // Since the plane is PLANE_SIZE x PLANE_SIZE and lies flat on XZ,
+    // the relevant world dimensions for the XY camera view are:
+    const contentWidth = PLANE_SIZE;  // Plane's extent along World X-axis
+    const contentHeight = PLANE_SIZE; // Plane's extent along World Z-axis (viewed as Height in XY camera)
+    const contentAspect = contentWidth / contentHeight; // Will be 1.0 for this square plane
+
+    // --- Calculate camera view size based on aspect ratios ---
+    let cameraViewWidth;
+    let cameraViewHeight;
+
+    // Compare screen aspect to content aspect
+    if (screenAspect > contentAspect) {
+        // Screen is wider than content (aspect > 1): Match content height, calculate width
+        // The limiting dimension is height. Fit the content height plus padding.
+        cameraViewHeight = contentHeight * PADDING_FACTOR;
+        // Calculate the corresponding width needed to fill the screen viewport
+        cameraViewWidth = cameraViewHeight * screenAspect;
+    } else {
+        // Screen is taller than or equal to content (aspect <= 1): Match content width, calculate height
+        // The limiting dimension is width. Fit the content width plus padding.
+        cameraViewWidth = contentWidth * PADDING_FACTOR;
+        // Calculate the corresponding height needed to fill the screen viewport
+        cameraViewHeight = cameraViewWidth / screenAspect;
+    }
+
+    // Set camera frustum properties (centered at origin)
+    camera.left = -cameraViewWidth / 2;
+    camera.right = cameraViewWidth / 2;
+    camera.top = cameraViewHeight / 2;
+    camera.bottom = -cameraViewHeight / 2;
+
+    // Update camera projection matrix
     camera.updateProjectionMatrix();
-    renderer.setSize(width, height);
+
+    // Update renderer size
+    renderer.setSize(screenWidth, screenHeight);
     renderer.render(scene, camera);
 }
 // debounced resizeHandler
