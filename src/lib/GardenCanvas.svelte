@@ -1259,7 +1259,7 @@ function updateDecorLightsForTime(isNight: boolean) {
             if (light.visible !== targetVisible) {
                 light.visible = targetVisible;
                 // If turning shadows on/off dynamically, you might need:
-                // if (lightProps.castShadow) light.castShadow = targetVisible;
+                if (lightProps.castShadow) light.castShadow = targetVisible;
             }
         }
     }
@@ -1699,6 +1699,33 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelP
     }
 }
 
+// --- NEW HELPER FUNCTION ---
+// Sets the initial state of lights for a *single* DecorInfo object
+function setInitialDecorLightState(decorInfo: DecorInfo, isNight: boolean) {
+    if (!decorInfo.lightMap || decorInfo.lightMap.size === 0) return;
+
+    const config = decorConfigs[decorInfo.decorTypeId];
+    if (!config || !config.pointLightDefinitions) return;
+
+    for (const [emptyName, light] of decorInfo.lightMap.entries()) {
+        const lightProps = config.pointLightDefinitions[emptyName];
+        if (!lightProps) continue;
+
+        let targetIntensity = lightProps.intensity ?? 1.0;
+        let targetVisible = true;
+
+        if (lightProps.activeAtNightOnly && !isNight) {
+            targetVisible = false;
+            targetIntensity = 0;
+        }
+
+        // Directly set the initial state
+        light.intensity = targetIntensity;
+        light.visible = targetVisible;
+        if (lightProps.castShadow) light.castShadow = targetVisible; // Also set initial shadow state
+    }
+}
+
 /// --- Function to Place Grid Object (REWRITTEN - With Point Light Creation) ---
 function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>) {
     // --- Asset Check ---
@@ -1870,8 +1897,9 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
                     if (lightProps.castShadow) {
                         light.castShadow = true;
                         // You might need to configure shadow map size, bias etc. here
-                        // light.shadow.mapSize.width = 512;
-                        // light.shadow.mapSize.height = 512;
+                        light.shadow.mapSize.width = 128;
+                        light.shadow.mapSize.height = 128;
+                        light.shadow.camera.far = light.distance
                         // light.shadow.bias = -0.005; // Adjust as needed
                     }
 
@@ -1888,6 +1916,16 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
                 }
             });
         }
+        // --- Set Initial Light State *** ---
+        // After creating all lights for this decor object, immediately set their
+        // visibility/intensity based on the current time.
+        const now = new Date();
+        const cycleProgress = (now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600) / 24;
+        const isNight = (cycleProgress < SUNRISE_START_POINT || cycleProgress >= SUNSET_END_POINT);
+        // Call a modified version or reuse updateDecorLightsForTime logic *just for this object*
+        setInitialDecorLightState(decorInfo, isNight); // Pass the newly created decorInfo
+        console.log(`   Set initial light state for ${typeId} based on isNight=${isNight}`);
+        // --- *** END ADDED BLOCK *** ---
     }
     // --- End Point Light Creation ---
 
