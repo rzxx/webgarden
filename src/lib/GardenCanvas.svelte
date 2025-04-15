@@ -578,7 +578,7 @@ function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader
 
         // --- Combined Scaling Effects ---
         // 1. Base scaling for watering effect (pulsing)
-        float waterScaleEffect = 1.0 + u_waterEffectIntensity * 0.1;
+        float waterScaleEffect = 1.0 - u_waterEffectIntensity * 0.1;
 
         // 2. Scaling based on fade progress (0.0 to 1.0)
         float fadeScaleEffect = u_fadeProgress; // Directly use fade progress
@@ -1675,7 +1675,7 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelP
                             `.replace(
                                 `#include <begin_vertex>`,
                                 `#include <begin_vertex>
-                                float waterScaleEffect = 1.0 + u_waterEffectIntensity * 0.1;
+                                float waterScaleEffect = 1.0 - u_waterEffectIntensity * 0.1;
                                 float fadeScaleEffect = u_fadeProgress;
                                 transformed *= fadeScaleEffect;
                                 transformed *= waterScaleEffect;
@@ -1995,7 +1995,7 @@ function waterPlantAt(row: number, col: number) {
         // --- START WATERING ANIMATION ---
         if (plantInfo.shaderUniforms) {
              console.log(`Starting watering effect for ${plantInfo.plantTypeId}`);
-             const waterAnimDuration = 1200; // Total duration in ms (e.g., 1.2 seconds)
+             const waterAnimDuration = 750; // Total duration in ms (e.g., 0.75 seconds)
 
              Object.values(plantInfo.shaderUniforms).forEach(uniforms => {
                 // 1. Animate Intensity (Ping-Pong with Easing)
