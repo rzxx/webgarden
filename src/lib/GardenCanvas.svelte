@@ -275,6 +275,11 @@ interface ObjectShaderUniforms {
     modelMinY: { value: number };
     modelMaxY: { value: number };
     waterEffectWidth: { value: number };
+    // Uniforms for reveal effect:
+    u_originalColor: { value: THREE.Color }; // The base color of this material (pre-tint)
+    u_healthyTint: { value: THREE.Color };   // The tint factor for healthy state (e.g., white)
+    u_thirstyTint: { value: THREE.Color };    // <<< NEW: The tint factor for thirsty state
+    u_wasThirsty: { value: boolean };
 }
 
 // --- Update ActiveAnimation interface ---
@@ -512,6 +517,9 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, modelPath: string, ta
 
     if (size.x === 0 && size.y === 0 && size.z === 0) {
         console.warn("GLTF scene bounding box is zero. Using default scale/offset.", gltfScene);
+        // Assign default bounds if size is zero to avoid division errors later
+        modelMinY = -0.5;
+        modelMaxY = 0.5;
     } else {
         const maxDim = Math.max(size.x, size.y, size.z);
 
@@ -519,6 +527,9 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, modelPath: string, ta
             modelNormalizationScale = targetSize / maxDim;
         } else {
             modelNormalizationScale = 1.0;
+            // Assign default bounds if maxDim is zero
+            modelMinY = -0.5;
+            modelMaxY = 0.5;
         }
 
         // Offsets calculated relative to original model size
@@ -553,100 +564,140 @@ function extractAndPrepareGltfData(gltfScene: THREE.Group, modelPath: string, ta
       
 // --- GLSL Injection Function ---
 function modifyMaterialForEffects(shader: { vertexShader: string; fragmentShader: string; uniforms: any }, uniforms: ObjectShaderUniforms) {
-    // Add uniforms to the shader
+    // Add ALL uniforms to the shader program's uniform list (JS side)
     shader.uniforms.u_fadeProgress = uniforms.fade;
-    shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect; // Intensity (0 to 1, should be eased on CPU)
-    shader.uniforms.u_waterProgress = uniforms.waterProgress;   // Top-to-bottom progress (0 to 1)
-    shader.uniforms.u_modelMinY = uniforms.modelMinY;         // Object's min Y in model space
-    shader.uniforms.u_modelMaxY = uniforms.modelMaxY;         // Object's max Y in model space
-    shader.uniforms.u_waterEffectWidth = uniforms.waterEffectWidth || { value: 0.1 }; // Width of the bright band (optional uniform)
+    shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect;
+    shader.uniforms.u_waterProgress = uniforms.waterProgress;
+    shader.uniforms.u_modelMinY = uniforms.modelMinY;
+    shader.uniforms.u_modelMaxY = uniforms.modelMaxY;
+    shader.uniforms.u_waterEffectWidth = uniforms.waterEffectWidth;
+    shader.uniforms.u_originalColor = uniforms.u_originalColor;
+    shader.uniforms.u_healthyTint = uniforms.u_healthyTint;
+    shader.uniforms.u_thirstyTint = uniforms.u_thirstyTint;
+    shader.uniforms.u_wasThirsty = uniforms.u_wasThirsty; // <<< Add wasThirsty uniform
 
-    // Inject vertex shader code
+    // --- Inject Vertex Shader Code (Remains the same) ---
     shader.vertexShader = `
         uniform float u_fadeProgress;
         uniform float u_waterEffectIntensity;
-        varying vec3 v_modelPosition; // Pass model space position
-        varying float v_waterEffectIntensity; // Pass intensity to fragment shader
+        varying vec3 v_modelPosition;
 
         ${shader.vertexShader}
     `.replace(
         `#include <begin_vertex>`,
         `#include <begin_vertex>
-
-        v_modelPosition = position; // Pass original model position
-        v_waterEffectIntensity = u_waterEffectIntensity; // Pass water intensity
-
-        // --- Combined Scaling Effects ---
-        // 1. Base scaling for watering effect (pulsing)
+        v_modelPosition = position;
         float waterScaleEffect = 1.0 - u_waterEffectIntensity * 0.1;
-
-        // 2. Scaling based on fade progress (0.0 to 1.0)
-        float fadeScaleEffect = u_fadeProgress; // Directly use fade progress
-
-        // 3. Combine the scales: Multiply the base vertex by both effects
-        // Apply fade scale first, then water pulse scale on top of that
+        float fadeScaleEffect = u_fadeProgress;
         transformed *= fadeScaleEffect;
-        transformed *= waterScaleEffect; // Apply watering scale *after* fade scale
+        transformed *= waterScaleEffect;
         `
     );
 
-    // Inject fragment shader code
-    shader.fragmentShader = `
+    // --- Inject Fragment Shader Code (Conditional Two Stages + Declarations) ---
+    let fragmentShaderSource = shader.fragmentShader;
+
+    // --- Add GLSL Declarations at the TOP ---
+    const glslDeclarations = `
+        // --- Custom Uniform Declarations ---
         uniform float u_fadeProgress;
-        uniform float u_waterEffectIntensity; // Overall eased intensity (0 -> 1 -> 0)
-        uniform float u_waterProgress;      // Water line progress (0 -> 1)
-        uniform float u_modelMinY;          // Model's min Y coordinate
-        uniform float u_modelMaxY;          // Model's max Y coordinate
-        uniform float u_waterEffectWidth;   // Width of the effect band (e.g., 0.1 for 10% of height)
+        uniform float u_waterEffectIntensity;
+        uniform float u_waterProgress;
+        uniform float u_modelMinY;
+        uniform float u_modelMaxY;
+        uniform float u_waterEffectWidth;
+        uniform vec3 u_originalColor;
+        uniform vec3 u_healthyTint;
+        uniform vec3 u_thirstyTint;
+        uniform bool u_wasThirsty; // <<< Declare wasThirsty uniform
 
-        varying vec3 v_modelPosition;       // Received model space position
-        varying float v_waterEffectIntensity; // Received overall eased intensity
+        // --- Custom Varying Declaration ---
+        varying vec3 v_modelPosition;
 
-        // Helper function for safe normalization
+        // --- Helper Function Declaration ---
         float safeNormalize(float value, float minVal, float maxVal) {
             float range = maxVal - minVal;
-            // Avoid division by zero for flat objects or invalid bounds
-            if (range < 0.0001) return 0.5; // Or 0.0 or 1.0 depending on desired behavior
+            if (range < 0.00001) return 0.5;
             return clamp((value - minVal) / range, 0.0, 1.0);
         }
-
-        ${shader.fragmentShader}
-    `.replace(
-        `#include <dithering_fragment>`, // A common place to modify final color/alpha
-        `#include <dithering_fragment>
-
-        // --- Watering Brightness Effect (Top-to-Bottom) ---
-
-        // 1. Normalize the fragment's vertical position (0 = bottom, 1 = top)
-        float normalizedY = safeNormalize(v_modelPosition.y, u_modelMinY, u_modelMaxY);
-
-        // 2. Determine the current "water line" position (normalized, 1 = top, 0 = bottom)
-        float waterLine = 1.0 - u_waterProgress; // As progress increases, waterLine decreases
-
-        // 3. Calculate how much this fragment should be affected based on its proximity to the water line
-        // Use smoothstep for a soft band around the water line
-        float lowerEdge = waterLine - u_waterEffectWidth * 0.5;
-        float upperEdge = waterLine + u_waterEffectWidth * 0.5;
-        float positionalIntensity = smoothstep(lowerEdge, waterLine, normalizedY) - smoothstep(waterLine, upperEdge, normalizedY);
-        // Clamp to ensure it doesn't go negative due to float precision
-        positionalIntensity = clamp(positionalIntensity, 0.0, 1.0);
+    `;
+    fragmentShaderSource = glslDeclarations + fragmentShaderSource;
 
 
-        // 4. Calculate the final brightness boost:
-        // Modulate the overall (eased) effect intensity by the positional intensity
-        float brightnessBoost = 1.0 + (v_waterEffectIntensity * positionalIntensity * 0.5); // e.g., 50% brighter at peak
+    // --- Stage 1: Inject AFTER <color_fragment> (Conditional Base Color Mix) ---
+    fragmentShaderSource = fragmentShaderSource.replace(
+        `#include <color_fragment>`,
+        `#include <color_fragment>
 
-        // Apply brightness boost
-        gl_FragColor.rgb *= brightnessBoost;
+        // --- Injected Code 1: Progressive Base Color Mix (Conditional) ---
+        // Check if the watering animation effect is active
+        if (u_waterEffectIntensity > 0.001) {
+            // Target color is always healthy base
+            vec3 healthyBase = u_originalColor * u_healthyTint;
 
+            // Determine the starting color based on the state *before* watering
+            vec3 startBaseColor;
+            if (u_wasThirsty) {
+                // If it started thirsty, the base is the thirsty color
+                startBaseColor = u_originalColor * u_thirstyTint;
+            } else {
+                // If it started healthy, the base is the healthy color itself
+                startBaseColor = healthyBase;
+                // Or, alternatively, read the color already calculated by <color_fragment>
+                // startBaseColor = diffuseColor.rgb; // Use this if the above line doesn't work well with textures
+            }
 
-        // --- Fade Effect (applied to alpha) ---
-        gl_FragColor.a *= u_fadeProgress;
+            // Calculate reveal factor based on scan line
+            float normalizedY = safeNormalize(v_modelPosition.y, u_modelMinY, u_modelMaxY);
+            float waterLine = 1.0 - u_waterProgress;
+            float revealTransitionWidth = 0.1;
+            float revealAmount = smoothstep(
+                waterLine - revealTransitionWidth * 0.5,
+                waterLine + revealTransitionWidth * 0.5,
+                normalizedY
+            ); // 0 = start color, 1 = healthy target color
 
-        // Discard pixel entirely if fully faded (optional optimization)
-        if (gl_FragColor.a < 0.01) discard;
+            // Mix from the determined start color to the healthy target color
+            vec3 mixedBaseColor = mix(startBaseColor, healthyBase, revealAmount);
+
+            // Overwrite diffuseColor ONLY during the animation
+            diffuseColor.rgb = mixedBaseColor;
+        }
+        // --- End Injected Code 1 ---
         `
     );
+
+    // --- Stage 2: Inject BEFORE <dithering_fragment> (Conditional Bright Band) ---
+    fragmentShaderSource = fragmentShaderSource.replace(
+        `#include <dithering_fragment>`,
+        `
+        // --- Injected Code 2: Bright Band Effect (Conditional) ---
+        // Apply brightness boost ONLY if the animation is active
+        if (u_waterEffectIntensity > 0.001) {
+            float normalizedY_forBand = safeNormalize(v_modelPosition.y, u_modelMinY, u_modelMaxY);
+            float waterLine_forBand = 1.0 - u_waterProgress;
+            float halfBandWidth = u_waterEffectWidth * 0.5;
+            float lowerBandEdge = waterLine_forBand - halfBandWidth;
+            float upperBandEdge = waterLine_forBand + halfBandWidth;
+            float positionalIntensity = smoothstep(lowerBandEdge, waterLine_forBand, normalizedY_forBand) - smoothstep(waterLine_forBand, upperBandEdge, normalizedY_forBand);
+            positionalIntensity = clamp(positionalIntensity, 0.0, 1.0);
+            float brightnessBoostFactor = 0.6;
+            float brightnessBoost = 1.0 + (u_waterEffectIntensity * positionalIntensity * brightnessBoostFactor);
+
+            gl_FragColor.rgb *= brightnessBoost; // Apply boost to lit color
+        }
+
+        // Apply Fade Alpha (Always applies)
+        gl_FragColor.a *= u_fadeProgress;
+        if (gl_FragColor.a < 0.01) discard;
+        // --- End Injected Code 2 ---
+
+        #include <dithering_fragment> // Include the original standard chunk
+        `
+    );
+
+    // Assign the fully modified source back to the shader object
+    shader.fragmentShader = fragmentShaderSource;
 }
 // --- End GLSL Injection ---
 
@@ -1165,6 +1216,11 @@ function startRenderLoop() {
 
                 // Request render to SHOW the visual change
                 needsRender = true;
+
+                if (updatablePlants.has(plantInfo)) {
+                    updatablePlants.delete(plantInfo);
+                    console.log(`   Removed thirsty plant [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}] from updatable list.`);
+                }
             }
         }
     }
@@ -1585,13 +1641,26 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelP
     const objectType = 'plantTypeId' in objectInfo ? 'plant' : 'decor';
     const typeId = objectType === 'plant' ? (objectInfo as PlantInfo).plantTypeId : (objectInfo as DecorInfo).decorTypeId;
 
+    let plantConfig: PlantConfig | undefined;
+    let defaultThirstyTint = new THREE.Color(0xaaaaaa); // Default fallback thirsty color
+    if (objectType === 'plant') {
+        plantConfig = plantConfigs[typeId] ?? plantConfigs.default;
+        // Use default config's thirsty tint if the specific plant doesn't have one defined
+        if (!plantConfig.thirstyColorTint && plantConfigs.default?.thirstyColorTint) {
+             defaultThirstyTint = plantConfigs.default.thirstyColorTint;
+        } else if (plantConfig.thirstyColorTint) {
+             defaultThirstyTint = plantConfig.thirstyColorTint; // Use plant-specific if available
+        }
+         // else: stick with the hardcoded default
+    }
+
     // Initialize or clear maps
     objectInfo.shaderUniforms = {};
     if (objectType === 'plant') {
         (objectInfo as PlantInfo).originalMaterialColors = new Map<THREE.Material, THREE.Color>();
     }
 
-    console.log(`Rebuilding unique materials & shaders for ${typeId} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}] using model ${modelPath}`);
+    // console.log(`Rebuilding materials & shaders for ${typeId} [${objectInfo.gridPos.row}, ${objectInfo.gridPos.col}] model ${modelPath}`); // Optional logging
 
     objectInfo.object3D.traverse((child) => {
         if (child instanceof THREE.Mesh && child.material) {
@@ -1601,70 +1670,60 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelP
 
             originalMaterials.forEach(originalMat => {
                 if (originalMat instanceof THREE.MeshStandardMaterial ||
-                originalMat instanceof THREE.MeshBasicMaterial ||
-                originalMat instanceof THREE.MeshPhysicalMaterial // Add others if needed
+                    originalMat instanceof THREE.MeshBasicMaterial ||
+                    originalMat instanceof THREE.MeshPhysicalMaterial
                 ) {
-                    // --- Create NEW MeshToonMaterial ---
                     const toonMaterial = new THREE.MeshToonMaterial();
-
-                    // --- Copy Essential Properties from Original ---
                     toonMaterial.color.copy(originalMat.color);
-                    toonMaterial.map = originalMat.map; // Copy texture map if it exists
-                    // Copy other maps if your models use them (normal, ao, emissive, etc.)
-                    // toonMaterial.normalMap = (originalMat as THREE.MeshStandardMaterial).normalMap;
-                    // toonMaterial.aoMap = (originalMat as THREE.MeshStandardMaterial).aoMap;
-                    // ... etc.
-
-                    toonMaterial.name = originalMat.name + '_toon'; // Optional: for debugging
-                    toonMaterial.side = originalMat.side; // Important if using DoubleSide etc.
-                    toonMaterial.transparent = true; // REQUIRED for fade/shader effects
+                    toonMaterial.map = originalMat.map;
+                    toonMaterial.name = originalMat.name + '_toon';
+                    toonMaterial.side = originalMat.side;
+                    toonMaterial.transparent = true;
                     toonMaterial.wireframe = originalMat.wireframe;
                     toonMaterial.gradientMap = toonGradientMap;
 
-                    // --- Store Original Color for Tinting (Plants Only) ---
+                    const baseColorForUniform = toonMaterial.color.clone();
+
                     if (objectType === 'plant') {
-                        // Store the toon material instance and its base color
-                        (objectInfo as PlantInfo).originalMaterialColors!.set(toonMaterial, toonMaterial.color.clone());
+                        (objectInfo as PlantInfo).originalMaterialColors!.set(toonMaterial, baseColorForUniform.clone());
                     }
 
-                    // --- Create ALL Shader Uniforms for THIS Toon material instance ---
+                    // Determine healthy and thirsty tints
+                    const healthyTint = (objectType === 'plant' && plantConfig?.healthyColorTint)
+                        ? plantConfig.healthyColorTint.clone()
+                        : new THREE.Color(0xffffff);
+
+                    const thirstyTint = (objectType === 'plant' && plantConfig?.thirstyColorTint)
+                         ? plantConfig.thirstyColorTint.clone()
+                         : defaultThirstyTint.clone(); // Use determined default
+
+                    // --- Create Shader Uniforms ---
                     const uniforms: ObjectShaderUniforms = {
                         fade: { value: 1.0 },
                         waterEffect: { value: 0.0 },
                         waterProgress: { value: 0.0 },
                         modelMinY: { value: cachedGltfData.modelMinY },
                         modelMaxY: { value: cachedGltfData.modelMaxY },
-                        waterEffectWidth: { value: 0.15 } // Example value
+                        waterEffectWidth: { value: 0.15 },
+                        u_originalColor: { value: baseColorForUniform },
+                        u_healthyTint: { value: healthyTint },
+                        u_thirstyTint: { value: thirstyTint },
+                        // <<< Initialize wasThirsty state >>>
+                        u_wasThirsty: { value: false } // Default to false
                     };
-                    // Store uniforms keyed by the NEW toonMaterial's UUID
                     objectInfo.shaderUniforms![toonMaterial.uuid] = uniforms;
 
-                    // --- Setup Main Material Shader (onBeforeCompile on the Toon Material) ---
                     toonMaterial.onBeforeCompile = (shader) => {
-                        console.log(`Applying onBeforeCompile to TOON material ${toonMaterial.uuid} for ${typeId}`);
-                        // Pass the uniforms object created above
                         modifyMaterialForEffects(shader, uniforms);
                     };
-
-                    // Mark for recompilation
                     toonMaterial.needsUpdate = true;
-
-                    // Add the new toon material to the list for this mesh
                     newMaterials.push(toonMaterial);
                     materialsChanged = true;
 
-                    // --- Create Custom Shadow Material (Logic remains similar) ---
-                    // Still use MeshDepthMaterial for shadows
-                    const shadowMaterial = new THREE.MeshDepthMaterial({
-                        depthPacking: THREE.RGBADepthPacking,
-                        // alphaTest: 0.01 // Potentially needed if fade creates transparent holes
-                    });
-                    // Link shadow material name to the TOON material's UUID for easier debugging
+                    // --- Shadow Material Setup (Remains the same) ---
+                    const shadowMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
                     shadowMaterial.name = `shadowMat_${toonMaterial.uuid}`;
-
-                    // --- Setup Shadow Material Shader (using the SAME uniforms instance) ---
                     shadowMaterial.onBeforeCompile = (shader) => {
-                        console.log(`Applying onBeforeCompile to SHADOW material for ${typeId} (linked to toon ${toonMaterial.uuid})`);
                         if (uniforms && uniforms.fade && uniforms.waterEffect) {
                             shader.uniforms.u_fadeProgress = uniforms.fade;
                             shader.uniforms.u_waterEffectIntensity = uniforms.waterEffect;
@@ -1681,32 +1740,26 @@ function rebuildOriginalMaterialColors(objectInfo: PlantInfo | DecorInfo, modelP
                                 transformed *= waterScaleEffect;
                                 `
                             );
-                        } else {
-                            console.error(`!!! Critical Error: Could not link shadow uniforms via closure for toon mat ${toonMaterial.uuid}.`);
-                        }
+                        } else { console.error(`Shadow uniform linking error for ${toonMaterial.uuid}`); }
                     };
                     shadowMaterial.needsUpdate = true;
-
-                    // Assign shadow material
                     child.customDepthMaterial = shadowMaterial;
 
                 } else {
-                    // Keep non-standard materials (e.g., LineBasicMaterial, PointsMaterial) as they are
-                    console.log(`Keeping original material type for mesh ${child.name}: ${originalMat.type}`);
-                    newMaterials.push(originalMat);
+                    newMaterials.push(originalMat); // Keep other material types
                 }
-                }); // End originalMaterials.forEach
+            });
 
             if (materialsChanged) {
                 child.material = Array.isArray(child.material) ? newMaterials : newMaterials[0];
             }
-        } // End if child is Mesh
-    }); // End objectInfo.object3D.traverse
+        }
+    });
 
-    const uniformCount = Object.keys(objectInfo.shaderUniforms).length;
-    console.log(`   Finished rebuilding. Stored ${uniformCount} shader uniforms.`);
+    const uniformCount = Object.keys(objectInfo.shaderUniforms ?? {}).length;
+    // console.log(`   Finished rebuilding for ${typeId}. Stored ${uniformCount} shader uniforms.`);
     if (objectType === 'plant') {
-         console.log(`   Stored original colors for ${(objectInfo as PlantInfo).originalMaterialColors!.size} unique materials.`);
+        // console.log(`   Stored original colors for ${(objectInfo as PlantInfo).originalMaterialColors?.size ?? 0} unique materials.`);
     }
 }
 
@@ -1960,71 +2013,107 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
 }
 // --- End Function to Place Grid Object ---
 
-// --- Function to Water Plant ---
+// --- Function to Water Plant (NO Pre-Animation Visual Update) ---
 function waterPlantAt(row: number, col: number) {
 	const gridObjectInfo = getGridObjectInfoAt(row, col);
 
 	if (gridObjectInfo && 'plantTypeId' in gridObjectInfo) {
 		const plantInfo = gridObjectInfo;
-		console.log(`Watering plant ${plantInfo.plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]`);
-		let visualStateChanged = false;
-		let timeUpdated = false;
+		const plantTypeId = plantInfo.plantTypeId;
+		console.log(`Watering plant ${plantTypeId} at [${plantInfo.gridPos.row}, ${plantInfo.gridPos.col}]`);
 		const now = Date.now();
+		let needsSave = true; // Always save time, potentially state
+		const wasThirsty = plantInfo.state === 'needs_water';
 
-		if (plantInfo.state === 'needs_water') {
-			plantInfo.state = 'healthy';
-            plantInfo.lastUpdateTime = now;
-            plantInfo.lastWateredTime = now;
-			console.log(`   Plant is now healthy.`);
-			updatePlantVisuals(plantInfo); // Update visuals (handles color change)
-			visualStateChanged = true;
-			timeUpdated = true;
-
-            if (plantInfo.growthProgress < 1.0) {
-                 updatablePlants.add(plantInfo);
-                 console.log(`   Plant added back to updatable list.`);
-                 // Request render only if loop isn't active AND visual state changed
-            }
+		// --- DO NOT Update Visuals Before Animation ---
+		if (wasThirsty) {
+			console.log(`   Plant is thirsty. State change will happen after animation.`);
+            // Visuals remain thirsty until shader takes over
 		} else {
-			plantInfo.lastWateredTime = now; // Reset thirst timer even if healthy
-			console.log(`   Plant was already healthy, reset thirst timer.`);
-			timeUpdated = true;
-            // Optional: maybe a visual cue for watering a healthy plant?
+			console.log(`   Plant is already healthy. Resetting timer.`);
+            // Visuals remain healthy
 		}
+
+        // --- Update Timestamps Immediately ---
+        plantInfo.lastWateredTime = now;
+        plantInfo.lastUpdateTime = now;
+
 
         // --- START WATERING ANIMATION ---
-        if (plantInfo.shaderUniforms) {
-             console.log(`Starting watering effect for ${plantInfo.plantTypeId}`);
-             const waterAnimDuration = 750; // Total duration in ms (e.g., 0.75 seconds)
+        if (plantInfo.shaderUniforms && Object.keys(plantInfo.shaderUniforms).length > 0) {
+             console.log(`   Starting watering effect animation for ${plantTypeId}.`);
+             const waterAnimDuration = 750; // ms
 
-             Object.values(plantInfo.shaderUniforms).forEach(uniforms => {
-                // 1. Animate Intensity (Ping-Pong with Easing)
-                // Uses cubicOut for up, power1In (t*t) for down by default
-                animateUniformPingPong(uniforms.waterEffect, 1.0, waterAnimDuration);
+            // Stop existing water animations & SET wasThirsty state
+            Object.values(plantInfo.shaderUniforms).forEach(uniforms => {
+                stopAnimationForUniform(uniforms.waterEffect);
+                stopAnimationForUniform(uniforms.waterProgress);
+                // <<< SET the uniform based on the plant's state AT THIS MOMENT >>>
+                uniforms.u_wasThirsty.value = wasThirsty;
+            });
 
-                // 2. Animate Progress (Linear Top-to-Bottom)
-                uniforms.waterProgress.value = 0.0; // Reset progress
-                animateUniform(uniforms.waterProgress, 1.0, waterAnimDuration, cubicOutEase, () => {
-                    // Optional: reset progress after completion if desired
-                    uniforms.waterProgress.value = 0.0;
-                });
-             });
-             // Ensure render loop runs for the animation
-             startRenderLoop();
-        } else {
-            console.warn("Could not apply watering effect: shaderUniforms missing.");
-            // Request render only if state changed but no animation started
-            if(visualStateChanged && !isRenderLoopActive) requestRender();
+            let progressAnimationsPending = Object.keys(plantInfo.shaderUniforms).length;
+
+            const onProgressAnimComplete = () => {
+                progressAnimationsPending--;
+                if (progressAnimationsPending <= 0) {
+                    console.log(`   Watering animation scan complete for ${plantTypeId}. Applying final state.`);
+
+                    // --- Final State Update (AFTER animation) ---
+                    if (wasThirsty) {
+                        plantInfo.state = 'healthy'; // Set state now
+                        // console.log(`   Set state to 'healthy' for ${plantTypeId}.`);
+                        if (plantInfo.growthProgress < 1.0) {
+                            updatablePlants.add(plantInfo);
+                            // console.log(`   Added ${plantTypeId} back to updatable list.`);
+                        }
+                        // console.log(`   Applying final healthy visuals via updatePlantVisuals for ${plantTypeId}.`);
+                        updatePlantVisuals(plantInfo);
+                    }
+
+                    // Reset progress uniform across all materials
+                    Object.values(plantInfo.shaderUniforms ?? {}).forEach(u => {
+                        if (u.waterProgress) u.waterProgress.value = 0.0;
+                        if (u.u_wasThirsty) u.u_wasThirsty.value = false; // Reset for next time
+                    });
+
+                    if (needsSave) {
+                        console.log(`   Triggering save for ${plantTypeId}.`);
+                        debouncedSaveGardenState();
+                    }
+
+                    // Request render if loop stopped, to ensure final state is shown
+                    if (!isRenderLoopActive) {
+                        console.log(`   Requesting final render frame for ${plantTypeId}.`);
+                        requestRender();
+                    }
+                }
+            };
+
+            Object.values(plantInfo.shaderUniforms).forEach((uniforms, index) => {
+                // 1. Animate Intensity (Pulse)
+                uniforms.waterEffect.value = 0.0;
+                animateUniformPingPong(uniforms.waterEffect, 1.0, waterAnimDuration, cubicOutEase, power1InEase);
+
+                // 2. Animate Progress (Scan)
+                uniforms.waterProgress.value = 0.0;
+                animateUniform(uniforms.waterProgress, 1.0, waterAnimDuration, linearEase, onProgressAnimComplete);
+            });
+            startRenderLoop(); // Ensure animation runs
+        } else { // No animation possible
+            console.warn(`   Cannot play watering animation for ${plantTypeId} (shaderUniforms missing?).`);
+            // Apply state change immediately if it was needed & no animation happened
+            if (wasThirsty) {
+                plantInfo.state = 'healthy';
+                if (plantInfo.growthProgress < 1.0) updatablePlants.add(plantInfo);
+                updatePlantVisuals(plantInfo); // Update visuals immediately
+                if (!isRenderLoopActive) requestRender();
+            }
+            if (needsSave) { // Save time update or state change
+                debouncedSaveGardenState();
+            }
         }
-        // --- End Watering Animation --
 
-		if (timeUpdated) {
-			debouncedSaveGardenState();
-		}
-        // Request render if visual state changed *and* no animation was started (which calls startRenderLoop)
-        if (visualStateChanged && !plantInfo.shaderUniforms && !isRenderLoopActive) {
-             requestRender();
-        }
 	} else if (gridObjectInfo) {
          console.log(`Cannot water: object at [${row}, ${col}] is decor.`);
     } else {
@@ -2537,9 +2626,13 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
       
 // --- renderFrame (Adjusted for Model Swapping) ---
 function renderFrame() {
-    renderRequested = false;
+    // --- Capture if this frame was explicitly requested ---
+    const wasExplicitlyRequested = renderRequested; // Check BEFORE resetting
+    renderRequested = false; // Reset the flag for the next cycle
     animationFrameId = undefined; // Clear the ID tracking this frame
-    let needsRenderLater = false; // Flag if any visual update happens
+    // --- End Capture ---
+
+    let needsRenderLater = false; // Flag if any visual update happens *within this frame*
     const perfNow = performance.now(); // Use performance.now for animations
     const now = new Date();
     const currentMinute = now.getMinutes();
@@ -2628,7 +2721,7 @@ function renderFrame() {
             const growthOccurred = updatePlantGrowth(plantInfo); // Updates progress and lastUpdateTime
 
             if (growthOccurred) {
-                 needsVisualUpdateThisFrame = true; // Scale/pos might change
+                needsVisualUpdateThisFrame = true; // Scale/pos might change
             }
 
             // --- Check for Stage Change AFTER growth update ---
@@ -2684,13 +2777,11 @@ function renderFrame() {
     }
 
     // --- Render Scene ---
-    if (needsRenderLater || activeAnimations.length > 0 || isInteracting) {
-        // Add a check for preview box visibility too for sanity
-        // console.log("Rendering. Preview visible:", previewGroup?.visible);
+    if (needsRenderLater || activeAnimations.length > 0 || isInteracting || wasExplicitlyRequested) {
+        // console.log(`Rendering. Reason: needsLater=${needsRenderLater}, anims=${activeAnimations.length > 0}, interact=${isInteracting}, explicit=${wasExplicitlyRequested}`); // Optional Debug log
         renderer.render(scene, camera);
-        needsRenderLater = true; // Ensure loop logic considers this render happened
     } else {
-        needsRenderLater = false; // Nothing required rendering this frame
+        // console.log(`Render skipped. Reason: needsLater=${needsRenderLater}, anims=${activeAnimations.length > 0}, interact=${isInteracting}, explicit=${wasExplicitlyRequested}`); // Optional Debug log
     }
 
     // --- Manage Render Loop ---
@@ -2713,9 +2804,6 @@ function renderFrame() {
         }
         // ...and it's not active, do nothing (loop remains stopped).
     }
-
-    // Ensure renderRequested is false as we've processed this frame's potential render
-    renderRequested = false;
 }
 // --- End renderFrame ---
 
