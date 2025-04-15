@@ -133,6 +133,9 @@
     {/if}
     {#if $heldItem}
         <p>Holding: {$heldItem.objectType} - {$heldItem.typeId}</p>
+        <h3>Controls:</h3>
+        <p>Hold mouse button and drag an item<br> to grid cell, where you want to place it.</p>
+        <p>Press R or scroll to rotate an item</p>
     {/if}
 </div>
 

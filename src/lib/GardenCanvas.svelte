@@ -170,6 +170,7 @@ interface PlantInfo {
     lastWateredTime: number;
     size: { rows: number; cols: number };
     gridPos: { row: number; col: number };
+    rotationY: number; // NEW: Store visual rotation
     object3D: THREE.Group | null;
     originalMaterialColors?: Map<THREE.Material, THREE.Color>;
     shaderUniforms?: Record<string, ObjectShaderUniforms>; // Map material UUID to its uniforms
@@ -213,6 +214,7 @@ interface SerializablePlantInfo {
 	lastUpdateTime: number;
 	lastWateredTime: number;
 	size: { rows: number; cols: number };
+    rotationY: number; // NEW: Save rotation
 	type: 'plant';
     // object3D is NOT saved
     // originalMaterialColors is NOT saved
@@ -261,9 +263,13 @@ let lastPreviewGridPos: { row: number; col: number } | null = null;
 const THROTTLE_DRAGOVER_MS = 75;
 // --- End Bounding Boxes ---
 
+const rotationSequence = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+const numRotations = rotationSequence.length;
+
 // --- State variables to track pointer drag ---
 let currentHeldItem: HeldItemInfo | null = null;
 let isPointerDragging = false; // Local state reflecting the store
+let previewRotationY: number = 0; // NEW: Rotation angle for the preview (0 or PI/2)
 /// --- End Bounding Boxes ---
 
 // --- Types for Shader Uniforms (Ensure this exists or add it) ---
@@ -942,7 +948,7 @@ function updatePlantVisuals(plantInfo: PlantInfo) {
         worldPosCenter.z + offsetZ
     );
     plantInfo.object3D.scale.set(finalScale, finalScale, finalScale);
-    // plantInfo.object3D.rotation.set(0, 0, 0); // Keep existing rotation
+    plantInfo.object3D.rotation.set(0, plantInfo.rotationY, 0);
 
     // --- 2. Update Material Color (Tinting) ---
     const targetColor = plantInfo.state === 'needs_water'
@@ -1403,9 +1409,9 @@ function updateDayNightCycle(currentTime: Date) {
 
 
 /**
- * Updates the position, size, and color of the preview box.
+ * Updates the position, size, and color of the preview box, considering rotation.
  */
-function updatePreviewBox(row: number, col: number, objectType: 'plant' | 'decor', typeId: string) {
+function updatePreviewBox(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, rotationY: number) {
 	if (!previewGroup) {
 		hidePreviewBox(); // Hide if something is wrong
 		return;
@@ -1422,13 +1428,23 @@ function updatePreviewBox(row: number, col: number, objectType: 'plant' | 'decor
         hidePreviewBox();
         return;
     }
-	const size = config.size;
-    const isValid = isAreaFree(row, col, size.rows, size.cols);
+    const baseSize = config.size;
+	// --- Calculate Effective Size Based on Rotation ---
+    let effectiveRows = baseSize.rows;
+    let effectiveCols = baseSize.cols;
+    const isRotated90 = Math.abs(rotationY - Math.PI / 2) < 0.01 || Math.abs(rotationY + Math.PI / 2) < 0.01;
+
+    if (isRotated90) { // Check if rotated +/-90 degrees
+        effectiveRows = baseSize.cols; // Swap dimensions
+        effectiveCols = baseSize.rows;
+    }
+    // --- End Calculate Effective Size ---
+    const isValid = isAreaFree(row, col, effectiveRows, effectiveCols);
     const material = isValid ? validPlacementMaterial : invalidPlacementMaterial;
 
 	let meshIndex = 0;
-	for (let rOffset = 0; rOffset < size.rows; rOffset++) {
-		for (let cOffset = 0; cOffset < size.cols; cOffset++) {
+	for (let rOffset = 0; rOffset < effectiveRows; rOffset++) {
+		for (let cOffset = 0; cOffset < effectiveCols; cOffset++) {
 			const targetRow = row + rOffset;
 			const targetCol = col + cOffset;
 
@@ -1791,7 +1807,7 @@ function setInitialDecorLightState(decorInfo: DecorInfo, isNight: boolean) {
 }
 
 /// --- Function to Place Grid Object (REWRITTEN - With Point Light Creation) ---
-function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>) {
+function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>, placementRotationY?: number) {
     // --- Asset Check ---
     if (!assetsLoaded) {
         console.warn(`Assets not loaded yet. Cannot place ${typeId}.`);
@@ -1842,10 +1858,30 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
 
 
 	// --- Check Free Space ---
-    if (!isAreaFree(row, col, objectSize.rows, objectSize.cols)) {
-        console.log(`Cannot place ${typeId} of size ${objectSize.rows}x${objectSize.cols} at [${row}, ${col}], area not free.`);
-		hidePreviewBox(); // Hide preview if shown
-        if (!isRenderLoopActive) requestRender(); // Ensure preview hide is rendered if needed
+    let placementRows = objectSize.rows;
+    let placementCols = objectSize.cols;
+    // Use placementRotationY if provided, otherwise check initialState (for loading), else default 0
+    let rotationToCheck = placementRotationY ?? (initialState as DecorInfo)?.rotationY ?? 0;
+    if (objectType === 'plant' && (initialState as PlantInfo)?.rotationY !== undefined) {
+         rotationToCheck = (initialState as PlantInfo).rotationY;
+    } else if (objectType === 'decor' && (initialState as DecorInfo)?.rotationY !== undefined) {
+         rotationToCheck = (initialState as DecorInfo).rotationY;
+    }
+     // If placementRotationY is provided, it overrides loaded state for this check
+    if (placementRotationY !== undefined) {
+         rotationToCheck = placementRotationY;
+    }
+
+    const isRotated90Check = Math.abs(rotationToCheck - Math.PI / 2) < 0.01 || Math.abs(rotationToCheck + Math.PI / 2) < 0.01;
+    if (isRotated90Check) {
+        placementRows = objectSize.cols;
+        placementCols = objectSize.rows;
+    }
+
+    if (!isAreaFree(row, col, placementRows, placementCols)) { // Use potentially rotated dimensions
+        console.log(`Cannot place ${typeId} of effective size ${placementRows}x${placementCols} at [${row}, ${col}], area not free.`);
+		hidePreviewBox();
+        if (!isRenderLoopActive) requestRender();
         return;
     }
 
@@ -1858,19 +1894,21 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     let newGridObject: PlantInfo | DecorInfo;
 
     if (objectType === 'plant') {
-        const plantConfig = config as PlantConfig;
-        const originalMaterialColors = new Map<THREE.Material, THREE.Color>(); // Reset for this new object
+        const plantInitialState = initialState as Partial<PlantInfo>;
+        const finalRotationY = placementRotationY ?? plantInitialState?.rotationY ?? 0;
         const newPlant: PlantInfo = {
             plantTypeId: typeId,
             state: 'healthy',
-            growthProgress: 0.0, // Default, will be overwritten by initialState if provided
+            growthProgress: 0.0,
             lastUpdateTime: now,
             lastWateredTime: now,
             size: { ...objectSize },
             gridPos: { row, col },
+            rotationY: finalRotationY,
             object3D: clonedObject as THREE.Group,
-            originalMaterialColors: originalMaterialColors,
-            ...(initialState as Partial<PlantInfo>) // Apply loaded state (overwrites defaults)
+            originalMaterialColors: new Map<THREE.Material, THREE.Color>(),
+            // Apply loaded state (overwrites defaults)
+            ...(plantInitialState)
         };
         newGridObject = newPlant;
         allPlants.add(newPlant);
@@ -1879,18 +1917,29 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         }
     } else { // objectType === 'decor'
         const decorConfig = config as DecorConfig;
-        const loadedState = initialState as Partial<DecorInfo>; // Cast for easier access
-        const rotationY = loadedState?.rotationY ?? decorConfig.defaultRotationY ?? 0;
+        const decorInitialState = initialState as Partial<DecorInfo>;
+        const finalRotationY = placementRotationY ?? decorInitialState?.rotationY ?? decorConfig.defaultRotationY ?? 0;
         const newDecor: DecorInfo = {
             decorTypeId: typeId,
             size: { ...objectSize },
             gridPos: { row, col },
-            rotationY: rotationY,
+            rotationY: 0,
             object3D: clonedObject as THREE.Group,
-            // Initialize light arrays/maps
-            lightObjects: [], // Ensure it's always a fresh array
-            lightMap: new Map<string, THREE.PointLight>(), // Ensure it's always a fresh Map
+            lightObjects: [],
+            lightMap: new Map<string, THREE.PointLight>(),
+            // Apply other loaded state fields (excluding rotationY which we handled)
+            ...(decorInitialState ? (({ rotationY, ...rest }) => rest)(decorInitialState) : {})
         };
+        newDecor.rotationY = finalRotationY; // Ensure the correct rotation is set
+
+        if (!Array.isArray(newDecor.lightObjects)) {
+            console.warn(`Loaded state for ${typeId} at [${row}, ${col}] had invalid 'lightObjects'. Resetting.`);
+            newDecor.lightObjects = [];
+        }
+        if (!(newDecor.lightMap instanceof Map)) {
+            console.warn(`Loaded state for ${typeId} at [${row}, ${col}] had invalid 'lightMap'. Resetting.`);
+            newDecor.lightMap = new Map<string, THREE.PointLight>();
+        }
         newGridObject = newDecor;
         allDecor.add(newDecor);
     }
@@ -1901,10 +1950,9 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     clonedObject.userData.typeId = typeId;
 
     // --- 3. Update Grid & Pointers ---
-    // (Keep existing logic for placing main object and pointers)
     gardenGrid[row][col] = newGridObject;
-    for (let rOffset = 0; rOffset < objectSize.rows; rOffset++) {
-        for (let cOffset = 0; cOffset < objectSize.cols; cOffset++) {
+    for (let rOffset = 0; rOffset < objectSize.rows; rOffset++) { // Use config size
+        for (let cOffset = 0; cOffset < objectSize.cols; cOffset++) { // Use config size
             if (rOffset === 0 && cOffset === 0) continue;
             const targetRow = row + rOffset;
             const targetCol = col + cOffset;
@@ -2261,10 +2309,13 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
         const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
 
         if (gridCoords) {
-            // Optimization: Only update preview if grid cell changed
+            // Optimization: Only update preview if grid cell or rotation changed
+            // We already update on rotation change via togglePreviewRotation,
+            // so just checking grid position change here is okay.
             if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
                 // console.log("Pointer move update preview:", gridCoords);
-                updatePreviewBox(gridCoords.row, gridCoords.col, currentHeldItem.objectType, currentHeldItem.typeId);
+                // *** PASS CURRENT ROTATION ***
+                updatePreviewBox(gridCoords.row, gridCoords.col, currentHeldItem!.objectType, currentHeldItem!.typeId, previewRotationY);
                  // Render loop should be running, no explicit request needed here normally
                  // if (!isRenderLoopActive) requestRender();
             }
@@ -2276,9 +2327,9 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
         }
     } else {
         // Pointer is not over the ground plane (e.g., maybe over UI elements temporarily if they overlay)
-         // console.log("Pointer move hide preview: missed ground");
-         hidePreviewBox();
-         // if (!isRenderLoopActive) requestRender();
+        // console.log("Pointer move hide preview: missed ground");
+        hidePreviewBox();
+        // if (!isRenderLoopActive) requestRender();
     }
 }, THROTTLE_POINTER_MOVE_MS);
 
@@ -2296,7 +2347,7 @@ function handlePointerMove(event: PointerEvent) {
 // --- NEW: Pointer Up/Cancel Handler (for placing items) ---
 function handlePointerUpOrCancel(event: PointerEvent) {
     // Only process if we were actively dragging an item with this pointer
-     if (!isPointerDragging || !currentHeldItem) {
+    if (!isPointerDragging || !currentHeldItem) {
         // console.log("Pointer up/cancel ignored: not dragging.");
         return;
     }
@@ -2307,15 +2358,16 @@ function handlePointerUpOrCancel(event: PointerEvent) {
     console.log("Pointer up/cancel detected, attempting placement...");
 
     const itemToPlace = { ...currentHeldItem }; // Capture item info before clearing state
+    const finalRotationY = previewRotationY; // Capture final rotation
 
     // --- Clean up drag state ---
     hidePreviewBox(); // Hide preview immediately
     heldItem.set(null); // Clear the store
     isDraggingItem.set(false); // Clear the store
-    // isPointerDragging = false; // Local flag updated via store subscription
     isInteracting = false; // Stop interaction state
+    previewRotationY = 0; // *** RESET PREVIEW ROTATION ***
+    lastPreviewGridPos = null; // Reset last grid pos
     stopRenderLoop();   // Stop the render loop explicitly
-    // Note: Pointer capture release is handled by the UI element's own listeners now.
 
     let placementOccurred = false;
 
@@ -2339,12 +2391,14 @@ function handlePointerUpOrCancel(event: PointerEvent) {
             const intersectPoint = intersects[0].point;
             const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
             if (gridCoords) {
-                console.log(`Attempting pointer place: ${itemToPlace.objectType} - ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}]`);
+                console.log(`Attempting pointer place: ${itemToPlace.objectType} - ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}] with rotation ${finalRotationY}`);
                 placeGridObjectAt(
                     gridCoords.row,
                     gridCoords.col,
                     itemToPlace.objectType,
-                    itemToPlace.typeId
+                    itemToPlace.typeId,
+                    undefined, // No initial state override here (it's for loading)
+                    finalRotationY // *** PASS FINAL ROTATION ***
                 );
                 // placeGridObjectAt requests render if needed and saves state
                 placementOccurred = true;
@@ -2367,6 +2421,64 @@ function handlePointerUpOrCancel(event: PointerEvent) {
     }
 }
 // --- End Pointer Up/Cancel Handler ---
+
+function handleKeyDown(event: KeyboardEvent) {
+    if (isPointerDragging && currentHeldItem && event.code == 'KeyQ') {
+        event.preventDefault();
+        // Rotate Counter-Clockwise
+        rotatePreview(-1);
+    } else if (isPointerDragging && currentHeldItem && event.code == 'KeyE'){
+        event.preventDefault();
+        // Rotate Clockwise
+        rotatePreview(1);
+    }
+}
+
+function handleWheel(event: WheelEvent) {
+    if (isPointerDragging && currentHeldItem) {
+        event.preventDefault(); // Prevent page scrolling
+
+        if (event.deltaY < 0) {
+            // Wheel scrolled UP -> Rotate Counter-Clockwise
+            rotatePreview(-1);
+        } else if (event.deltaY > 0) {
+            // Wheel scrolled DOWN -> Rotate Clockwise
+            rotatePreview(1);
+        }
+        // If deltaY is 0 (e.g., horizontal scroll on some devices), do nothing
+    }
+}
+
+/**
+* Rotates the preview object clockwise (direction=1) or
+* counter-clockwise (direction=-1).
+*/
+function rotatePreview(direction: 1 | -1) {
+    if (!currentHeldItem) return; // Should not happen if called correctly, but safety first
+
+    // Find the index of the current rotation (handle potential float errors)
+    let currentIndex = -1;
+    for(let i = 0; i < numRotations; i++) {
+        if (Math.abs(previewRotationY - rotationSequence[i]) < 0.01) {
+            currentIndex = i;
+            break;
+        }
+    }
+    // If not found (e.g., first rotation), assume index 0
+    if (currentIndex === -1) currentIndex = 0;
+
+    // Calculate the next index, wrapping around using modulo
+    // Adding numRotations before modulo handles negative results correctly
+    const nextIndex = (currentIndex + direction + numRotations) % numRotations;
+    previewRotationY = rotationSequence[nextIndex];
+
+    console.log(`Preview Rotation changed to: ${previewRotationY} (Direction: ${direction})`);
+
+    // Force preview update with new rotation
+    if (lastPreviewGridPos) {
+        updatePreviewBox(lastPreviewGridPos.row, lastPreviewGridPos.col, currentHeldItem.objectType, currentHeldItem.typeId, previewRotationY);
+    }
+}
 
 // --- Asset Loading Function (Modified) ---
 async function loadAssets() {
@@ -2909,7 +3021,8 @@ onMount(() => {
     window.addEventListener('lostpointercapture', handlePointerUpOrCancel);
 	window.addEventListener('resize', resizeHandler);
 	window.addEventListener('beforeunload', handleBeforeUnload);
-
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('wheel', handleWheel, { passive: false }); // Need passive:false to preventDefault scroll
 
 	// --- Load Assets and THEN Load Save Data ---
     assetsLoadingPromise = loadAssets().then(() => {
@@ -2965,6 +3078,8 @@ onMount(() => {
 		window.removeEventListener('pointercancel', handlePointerUpOrCancel);
 		window.removeEventListener('lostpointercapture', handlePointerUpOrCancel);
         window.removeEventListener('resize', resizeHandler);
+        window.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('wheel', handleWheel);
 		// beforeunload listener removed in onDestroy
 	};
 });
