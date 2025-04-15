@@ -2569,14 +2569,14 @@ function saveGardenState() {
         const serializableGrid: SerializableGardenGrid = Array(GRID_DIVISIONS).fill(null).map(() => Array(GRID_DIVISIONS).fill(null));
 
         const serialize = (info: PlantInfo | DecorInfo): SerializablePlantInfo | SerializableDecorInfo | null => {
-             if ('plantTypeId' in info) {
-                const { object3D, originalMaterialColors, ...dataToSave } = info; // Exclude non-serializable fields
+            if ('plantTypeId' in info) {
+                const { object3D, originalMaterialColors, shaderUniforms, ...dataToSave } = info; // Exclude non-serializable fields
                 return { ...dataToSave, type: 'plant' };
-             } else if ('decorTypeId' in info) {
-                 const { object3D, ...dataToSave } = info; // Exclude non-serializable fields
-                 return { ...dataToSave, type: 'decor' };
-             }
-             return null;
+            } else if ('decorTypeId' in info) {
+                const { object3D, lightObjects, lightMap, shaderUniforms, ...dataToSave } = info; // Exclude non-serializable fields
+                return { ...dataToSave, type: 'decor' };
+            }
+            return null;
         }
 
         // Iterate over grid, find main objects, serialize them
@@ -2585,14 +2585,14 @@ function saveGardenState() {
                 const cell = gardenGrid[r][c];
                 // Only save if it's the *main* info block (not null or a pointer)
                 if (cell && !('pointerTo' in cell)) {
-                     const serializableData = serialize(cell);
-                     if(serializableData) {
+                    const serializableData = serialize(cell);
+                    if(serializableData) {
                         serializableGrid[r][c] = serializableData;
-                     }
+                    }
                 } else if (cell === null) {
                     serializableGrid[r][c] = null;
                 }
-                 // Pointers are implicitly handled by the main object's position
+                // Pointers are implicitly handled by the main object's position
             }
         }
 
