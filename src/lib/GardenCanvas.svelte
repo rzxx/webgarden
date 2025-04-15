@@ -133,7 +133,7 @@ const decorConfigs: Record<string, DecorConfig> = {
             "PointLight_Lamp": { // Matches the Empty name in street_lamp.glb
                 color: 0xFFE6A7, // Cornsilk (warm white)
                 intensity: 10.0,
-                distance: 12,
+                distance: 10,
                 decay: 2,
                 castShadow: true, // Maybe one lamp casts shadows? Use sparingly!
                 activeAtNightOnly: true // Only on when dark
@@ -361,11 +361,11 @@ const SUNSET_GROUND_COLOR = new THREE.Color(0x94925C);
 // --- Light Intensities  ---
 const SUN_DISTANCE = 40;
 const MAX_DIRECTIONAL_INTENSITY = 2;
-const MIN_DIRECTIONAL_INTENSITY = 0.4;
+const MIN_DIRECTIONAL_INTENSITY = 0.7;
 const MAX_AMBIENT_INTENSITY = 0.8;
-const MIN_AMBIENT_INTENSITY = 0.2;
+const MIN_AMBIENT_INTENSITY = 0.35;
 const MAX_HEMISPHERE_INTENSITY = 1;
-const MIN_HEMISPHERE_INTENSITY = 0.2;
+const MIN_HEMISPHERE_INTENSITY = 0.4;
 
 // --- State Variables  ---
 let ambientLight: THREE.AmbientLight | null = null;
@@ -2011,8 +2011,9 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
                         // You might need to configure shadow map size, bias etc. here
                         light.shadow.mapSize.width = 128;
                         light.shadow.mapSize.height = 128;
-                        light.shadow.camera.far = light.distance
-                        // light.shadow.bias = -0.005; // Adjust as needed
+                        light.shadow.camera.far = light.distance;
+                        light.shadow.bias = -0.001;
+                        light.shadow.normalBias = 0.05; // Adjust as needed
                     }
 
                     // Store the light instance
@@ -2882,7 +2883,7 @@ function renderFrame() {
         console.log(`Removed ${plantsToRemoveFromUpdateList.length} plants from update list. New size: ${updatablePlants.size}`);
         // No need to request render here, as the removal itself doesn't change visuals immediately
     }
-
+    
     // --- Save State if changed ---
     if (needsSave) {
         debouncedSaveGardenState();
@@ -2967,7 +2968,9 @@ onMount(() => {
 	directionalLight.shadow.camera.top = shadowCamSize;
 	directionalLight.shadow.camera.bottom = -shadowCamSize;
 	directionalLight.shadow.camera.near = 0.5;
-	directionalLight.shadow.camera.far = SUN_DISTANCE * 2; // Ensure far enough
+	directionalLight.shadow.camera.far = SUN_DISTANCE * 1.5; // Ensure far enough
+    directionalLight.shadow.normalBias = 0.005;
+    directionalLight.shadow.bias = -0.005;
 	// directionalLight.shadow.mapSize.width = 2048;
 	// directionalLight.shadow.mapSize.height = 2048;
 	scene.add(directionalLight);
