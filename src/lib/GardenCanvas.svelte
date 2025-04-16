@@ -1,12 +1,16 @@
 <script lang="ts">
 import { onMount, onDestroy } from 'svelte';
 import * as THREE from 'three';
-import { MathUtils } from 'three'; // For mapLinear and lerp
+import { MathUtils, Vector2 } from 'three'; // For mapLinear and lerp
 import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo,
     availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo } from './stores';
 import { get } from 'svelte/store';
 import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
 import { DRACOLoader } from 'three-stdlib';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { OutlinePass } from 'three/examples/jsm/postprocessing/OutlinePass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'; // Correct modern output pass
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // Import SkeletonUtils for cloning
 
 // Toon Shading Gradient Map
@@ -273,6 +277,8 @@ let isPointerDragging = false; // Local state reflecting the store
 let previewRotationY: number = 0; // NEW: Rotation angle for the preview (0 or PI/2)
 /// --- End Bounding Boxes ---
 
+let unsubSelectedObjectInfo: (() => void) | null = null; // Variable for unsubscribe from selected objects
+
 // --- Types for Shader Uniforms (Ensure this exists or add it) ---
 interface ObjectShaderUniforms {
     fade: { value: number };
@@ -387,6 +393,12 @@ let renderer: THREE.WebGLRenderer;
 let scene: THREE.Scene;
 let camera: THREE.OrthographicCamera;
 let ground: THREE.Mesh;
+
+// --- Post-processing Variables ---
+let composer: EffectComposer | null = null;
+let outlinePass: OutlinePass | null = null;
+let renderPass: RenderPass | null = null;
+// --- End Post-processing Variables ---
 
 // Configuration for background updates (can be adjusted or made dynamic later)
 const BACKGROUND_UPDATE_INTERVAL_MS = 500; // Check for growth/dynamics every 500ms (2fps) - adjust as needed
@@ -734,6 +746,20 @@ function getGrowthStageConfig(plantInfo: PlantInfo): GrowthStage | null {
     }
 }
 // --- End Utility Functions ---
+
+// --- Function to Update Outline Pass Selection ---
+function updateSelectionOutline(selectedObj: THREE.Object3D | null) {
+    if (outlinePass) {
+        if (selectedObj) {
+            // OutlinePass expects an array
+            outlinePass.selectedObjects = [selectedObj];
+            console.log("Outline set for:", selectedObj.userData.typeId);
+        } else {
+            outlinePass.selectedObjects = []; // Clear selection
+            console.log("Outline cleared.");
+        }
+    }
+}
 
 // --- Coordinate Mapping Functions ---
 
@@ -1574,6 +1600,7 @@ function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
         currentSelection.gridPos.row === gridPos.row &&
         currentSelection.gridPos.col === gridPos.col) {
         selectedObjectInfo.set(null);
+        updateSelectionOutline(null);
         console.log("   Cleared selection as the selected object was removed.");
     }
 
@@ -2180,10 +2207,10 @@ function waterPlantAt(row: number, col: number) {
 }
 // --- End Function to Water Plant ---
 
-// --- handleCanvasPointerDown (REWRITTEN for individual objects) ---
+// --- handleCanvasPointerDown ---
 function handleCanvasPointerDown(event: PointerEvent) {
 	// Ignore if dragging UI item or refs missing
-    if (isPointerDragging || !container || !camera || !scene) return;
+    if (isPointerDragging || !container || !camera || !scene || event.button !== 0) return;
 
 	const currentAction = get(selectedAction);
     const rect = container.getBoundingClientRect();
@@ -2276,55 +2303,67 @@ function handleCanvasPointerDown(event: PointerEvent) {
 
     } else if (!isPointerDragging) {
         // --- SELECTION ACTION (No tool active, not dragging) ---
-        if (objectHit && hitInfo) {
-            // --- Object Clicked: Select it ---
-            const info = hitInfo.info;
-            const typeId = hitInfo.type === 'plant' ? (info as PlantInfo).plantTypeId : (info as DecorInfo).decorTypeId;
-            const objectType = hitInfo.type;
+        let objectToSelect: PlantInfo | DecorInfo | null = null;
 
-            // Find user-friendly name
-            const availableList = objectType === 'plant' ? availablePlants : availableDecor;
-            const name = availableList.find(item => item.id === typeId)?.name ?? typeId; // Fallback to id
-
-            // Determine status
-            let status = 'OK';
-            let growth: number | undefined = undefined;
-            if (objectType === 'plant') {
-                const plantInfo = info as PlantInfo;
-                status = plantInfo.state === 'healthy' ? 'Healthy' : 'Needs Water';
-                growth = plantInfo.growthProgress;
-                // Add more specific statuses later if needed
-            } else {
-                // Decor status - example: check if lights are on (if applicable)
-                const decorInfo = info as DecorInfo;
-                if (decorInfo.decorTypeId === 'streetLamp' && decorInfo.lightObjects && decorInfo.lightObjects.length > 0) {
-                    // Simple check: if any light is on and visible
-                    const isOn = decorInfo.lightObjects.some(light => light.intensity > 0 && light.visible);
-                    status = isOn ? 'On' : 'Off';
-                }
-            }
-
-            // Construct the data payload
-            const displayInfo: SelectedObjectDisplayInfo = {
-                typeId: typeId,
-                name: name,
-                objectType: objectType,
-                status: status,
-                growthProgress: growth,
-                gridPos: { ...info.gridPos }
-            };
-
-            // Update the store
-            selectedObjectInfo.set(displayInfo);
-            console.log("Selected object:", displayInfo);
-            requestRender(); // Request render to potentially show feedback (if added later)
-
-        } else {
-            // --- Empty Space Clicked: Deselect ---
-            selectedObjectInfo.set(null);
-            console.log("Clicked empty space, deselected.");
-            requestRender(); // If there was visual feedback for selection, it needs to be removed
+        // 1. Prioritize direct hit
+        if (hitInfo?.info) {
+            objectToSelect = hitInfo.info;
+            // console.log("Selection based on direct object hit.");
         }
+        // 2. If no direct hit, use ground hit to find object at grid location
+        else if (groundHitPoint) {
+            const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
+            if (gridCoords) {
+                objectToSelect = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
+            }
+        }
+
+        // --- Perform Selection/Deselection ---
+        const currentSelection = get(selectedObjectInfo);
+
+        if (objectToSelect && objectToSelect.object3D) {
+            // An object was found either directly or via grid lookup
+            if (currentSelection && currentSelection.gridPos.row === objectToSelect.gridPos.row && currentSelection.gridPos.col === objectToSelect.gridPos.col) {
+                // Clicked the same object again: Deselect
+                selectedObjectInfo.set(null); // Store change triggers outline clear via subscription
+                console.log("Deselected object by clicking again.");
+            } else {
+                // Select the new object
+                const info = objectToSelect;
+                const objectType = 'plantTypeId' in info ? 'plant' : 'decor';
+                const typeId = 'plantTypeId' in info ? info.plantTypeId : info.decorTypeId;
+                const availableList = objectType === 'plant' ? availablePlants : availableDecor;
+                const name = availableList.find(item => item.id === typeId)?.name ?? typeId;
+                let status = 'OK';
+                let growth: number | undefined = undefined;
+                // determine status/growth)
+                if (objectType === 'plant') {
+                    const plantInfo = info as PlantInfo;
+                    status = plantInfo.state === 'healthy' ? 'Healthy' : 'Needs Water';
+                    growth = plantInfo.growthProgress;
+                } else {
+                    const decorInfo = info as DecorInfo;
+                    if (decorInfo.decorTypeId === 'streetLamp' && decorInfo.lightObjects && decorInfo.lightObjects.length > 0) {
+                        const isOn = decorInfo.lightObjects.some(light => light.intensity > 0 && light.visible);
+                        status = isOn ? 'On' : 'Off';
+                    }
+                }
+
+                const displayInfo: SelectedObjectDisplayInfo = { /* ... create displayInfo ... */
+                    typeId: typeId, name: name, objectType: objectType, status: status, growthProgress: growth, gridPos: { ...info.gridPos }
+                };
+                selectedObjectInfo.set(displayInfo); // Update store
+                updateSelectionOutline(info.object3D); // Update outline immediately
+                console.log("Selected object:", displayInfo);
+            }
+        } else {
+            // No object found at click location (empty ground or outside grid)
+            if (currentSelection) { // Only deselect if something *was* selected
+                selectedObjectInfo.set(null); // Store change triggers outline clear via subscription
+                console.log("Clicked empty space, deselected.");
+            }
+        }
+        requestRender(); // Request render for outline change or feedback
     }
     // If dragging, do nothing on pointer down in canvas
 }
@@ -2782,7 +2821,15 @@ function performResize() {
 
     // Update renderer size
     renderer.setSize(screenWidth, screenHeight);
-    renderer.render(scene, camera);
+    if (composer) {
+        composer.setSize(screenWidth, screenHeight);
+    }
+
+    if (composer) {
+            composer.render();
+        } else {
+            renderer.render(scene, camera);
+        }
 }
 // debounced resizeHandler
 const resizeHandler = debounce(performResize, 150);
@@ -2815,8 +2862,6 @@ function renderFrame() {
     if (currentMinute !== lastDayNightUpdateMinute) {
         updateDayNightCycle(now);
         lastDayNightUpdateMinute = currentMinute;
-        needsRenderLater = true; // <-- ADD THIS LINE
-        // Day/night change always requires a render, but renderFrame is already running
     }
 
     let needsSave = false;
@@ -2951,11 +2996,9 @@ function renderFrame() {
     }
 
     // --- Render Scene ---
-    if (needsRenderLater || activeAnimations.length > 0 || isInteracting || wasExplicitlyRequested) {
-        // console.log(`Rendering. Reason: needsLater=${needsRenderLater}, anims=${activeAnimations.length > 0}, interact=${isInteracting}, explicit=${wasExplicitlyRequested}`); // Optional Debug log
-        renderer.render(scene, camera);
-    } else {
-        // console.log(`Render skipped. Reason: needsLater=${needsRenderLater}, anims=${activeAnimations.length > 0}, interact=${isInteracting}, explicit=${wasExplicitlyRequested}`); // Optional Debug log
+    let needsRenderThisFrame = needsRenderLater || activeAnimations.length > 0 || isInteracting || wasExplicitlyRequested;
+    if (needsRenderThisFrame && composer) { // Check if composer exists
+        composer.render(); // <-- Use composer to render
     }
 
     // --- Manage Render Loop ---
@@ -2993,11 +3036,25 @@ onMount(() => {
         if (isPointerDragging && !isInteracting && initComplete) {
             console.log("Pointer drag detected, starting interaction loop.");
             selectedObjectInfo.set(null); // <-- Clear selection on drag start
+            updateSelectionOutline(null);
             isInteracting = true;
             startRenderLoop();
             selectedAction.set(null); // Hide tool selection
         }
         // Stop handled by pointer up/cancel
+    });
+    unsubSelectedObjectInfo = selectedObjectInfo.subscribe(currentSelection => {
+        if (initComplete && !currentSelection) {
+            // If the selection store becomes null (due to UI click, empty space click, tool selection etc.)
+            // clear the visual outline.
+            updateSelectionOutline(null);
+             // If the loop isn't running, request a render to show the cleared outline
+            if (!isRenderLoopActive) {
+                requestRender();
+            }
+        }
+        // Note: We set the outline *immediately* when selecting an object in handleCanvasPointerDown,
+        // so we don't need to handle the selection case here, only the clearing case.
     });
 
 	scene = new THREE.Scene();
@@ -3077,6 +3134,30 @@ onMount(() => {
 		previewMeshes.push(plane);
 		previewGroup.add(plane);
 	}
+    
+    // Post-Processing
+    composer = new EffectComposer(renderer);
+
+    renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    outlinePass = new OutlinePass(
+        new Vector2(container.clientWidth, container.clientHeight),
+        scene,
+        camera
+    );
+    // Configure Outline Pass
+    outlinePass.edgeStrength = 5.0; // How strong the outline is
+    outlinePass.edgeGlow = 0.5;     // Glow effect (0 = no glow)
+    outlinePass.edgeThickness = 1.5; // Thickness of the outline
+    outlinePass.visibleEdgeColor.set('#ffffff'); // Color for visible edges
+    outlinePass.hiddenEdgeColor.set('#444444'); // Color for edges hidden by other objects (try setting same as visible or different)
+    // outlinePass.pulsePeriod = 0; // Set pulse speed (0 = off)
+    composer.addPass(outlinePass);
+
+    // Add OutputPass to handle output encoding and tone mapping
+    const outputPass = new OutputPass();
+    composer.addPass(outputPass);
 
 	// --- Event Listeners (Keep as is, uses updated handlers) ---
 	container.addEventListener('pointerdown', handleCanvasPointerDown);
@@ -3137,6 +3218,7 @@ onMount(() => {
 		// Remove listeners added in onMount
         unsubHeldItem();
         unsubIsDragging();
+        if (unsubSelectedObjectInfo) unsubSelectedObjectInfo();
 		if (container) container.removeEventListener('pointerdown', handleCanvasPointerDown);
 		window.removeEventListener('pointermove', handlePointerMove);
 		window.removeEventListener('pointerup', handlePointerUpOrCancel);
@@ -3206,8 +3288,10 @@ onDestroy(() => {
 
 	// --- Dispose Lights / Fog (usually not strictly needed, but good practice)
     // Lights don't have geometry/material, fog doesn't need explicit disposal
-    // --- Remove Instanced Mesh Disposal ---
-    // console.log("Disposing Instanced Meshes and associated assets..."); // REMOVED SECTION
+    composer = null;
+    renderPass = null;
+    outlinePass = null;
+    console.log("Cleared post-processing references.");
 
     // --- Dispose CACHED GLTF data (Original Scenes) ---
     console.log("Disposing cached GLTF original assets...");

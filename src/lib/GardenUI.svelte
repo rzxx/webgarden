@@ -19,7 +19,7 @@
         });
     }
 
-    // --- NEW: Pointer Down Handler for Items ---
+    // --- Pointer Down Handler for Items ---
     function handleItemPointerDown(event: PointerEvent, itemInfo: HeldItemInfo) {
         // Prevent default actions like text selection or browser drag behavior
         event.preventDefault();
