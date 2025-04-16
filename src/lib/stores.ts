@@ -37,3 +37,15 @@ export const heldItem = writable<HeldItemInfo | null>(null);
 
 // Flag to indicate if a pointer-based drag is in progress
 export const isDraggingItem = writable<boolean>(false);
+// Store for Selected Object Info
+export interface SelectedObjectDisplayInfo {
+    typeId: string; // e.g., 'fern', 'streetLamp'
+    name: string;   // User-friendly name, e.g., "Fern", "Street Lamp"
+    objectType: 'plant' | 'decor';
+    status: string; // e.g., 'Healthy', 'Needs Water', 'OK', 'On', 'Off'
+    growthProgress?: number; // Optional, for plants (0-1)
+    gridPos: { row: number; col: number }; // For context/debugging
+    // Add any other relevant info you want to display
+}
+
+export const selectedObjectInfo = writable<SelectedObjectDisplayInfo | null>(null);

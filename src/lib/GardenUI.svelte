@@ -1,5 +1,6 @@
 <script lang="ts">
-    import { selectedAction, availablePlants, availableDecor, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo } from './stores'; // Import new stores
+    import { selectedAction, availablePlants, availableDecor, type SelectedAction,
+        heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo } from './stores'; // Import new stores
     import { get } from 'svelte/store'; // Import get
 
     function selectTool(toolType: 'water' | 'remove') {
@@ -12,6 +13,7 @@
                  // Optionally release pointer capture if held by an item
                  // This might require tracking the target element
             }
+            selectedObjectInfo.set(null);
             // Toggle tool selection
             return JSON.stringify(current) === JSON.stringify(newAction) ? null : newAction;
         });
@@ -24,6 +26,7 @@
 
         // Clear any selected tool when starting to drag an item
         selectedAction.set(null);
+        selectedObjectInfo.set(null);
 
         // Set the item being held and the dragging state
         heldItem.set(itemInfo);
@@ -71,71 +74,70 @@
         if (!currentAction) return false;
         return JSON.stringify(currentAction) === JSON.stringify(action);
     }
+
+    // Helper function to format growth progress
+    function formatGrowth(progress: number | undefined): string {
+        if (progress === undefined) return '';
+        return `${(progress * 100).toFixed(0)}% Grown`;
+    }
 </script>
 
 <div class="ui-panel">
     <h3>Toolbox</h3>
 
-    <!-- Plant Selection (Draggable) -->
+    <!-- Item Selection -->
     <h4>Plants:</h4>
     <div class="item-list">
         {#each availablePlants as plant}
-        <div
-            class="item"
-            role="button"
-            tabindex="0"
-            aria-label={`Pick up ${plant.name}`}
-            on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
-            style="touch-action: none;"
-        >
-            {plant.name}
-        </div>
+            <div
+                class="item" role="button" tabindex="0"
+                aria-label={`Pick up ${plant.name}`}
+                on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
+                style="touch-action: none;"
+            >{plant.name}</div>
         {/each}
     </div>
-
-    <!-- Decor Selection (Draggable) -->
     <h4>Decor:</h4>
     <div class="item-list">
         {#each availableDecor as decor}
-        <div
-            class="item"
-            role="button"
-            tabindex="0"
-            aria-label={`Pick up ${decor.name}`}
-            on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
-            style="touch-action: none;"
-        >
-            {decor.name}
-        </div>
+            <div
+                class="item" role="button" tabindex="0"
+                aria-label={`Pick up ${decor.name}`}
+                on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
+                style="touch-action: none;"
+            >{decor.name}</div>
         {/each}
     </div>
 
     <!-- Tool Selection -->
     <h4>Tools:</h4>
-    <button
-        on:click={() => selectTool('water')}
-        class:selected={isSelected({ type: 'tool', toolType: 'water' })}
-    >
-        Watering Can
+    <button on:click={() => selectTool('water')} class:selected={isSelected({ type: 'tool', toolType: 'water' })}>
+        Watering Can {@html isSelected({ type: 'tool', toolType: 'water' }) ? ' (Selected)' : ''}
     </button>
-    <button
-        on:click={() => selectTool('remove')}
-        class:selected={isSelected({ type: 'tool', toolType: 'remove' })}
-    >
-        Shovel
+    <button on:click={() => selectTool('remove')} class:selected={isSelected({ type: 'tool', toolType: 'remove' })}>
+        Shovel {@html isSelected({ type: 'tool', toolType: 'remove' }) ? ' (Selected)' : ''}
     </button>
 
-    <!-- Display current selection for debugging -->
-    {#if currentAction}
-        <p>Tool: {JSON.stringify(currentAction)}</p>
-    {:else}
-        <p>Tool: None</p>
-    {/if}
+    <!-- Drag Controls Info -->
     {#if $heldItem}
-        <p>Holding: {$heldItem.objectType} - {$heldItem.typeId}</p>
-        <h3>Controls:</h3>
-        <p>Hold mouse button and drag an item<br> to grid cell, where you want to place it.</p>
-        <p>Press Q/E or scroll to rotate an item</p>
+        <div class="info-section drag-info">
+            <h4>Dragging: {$heldItem.typeId}</h4>
+            <p>Move to grid & release to place.</p>
+            <p>Press Q/E or scroll to rotate.</p>
+        </div>
+    {/if}
+
+    <!-- NEW: Selected Object Info Display -->
+    {#if $selectedObjectInfo && !$heldItem && !currentAction}
+        <div class="info-section selection-info">
+            <h4>Selection:</h4>
+            <p><strong>{$selectedObjectInfo.name}</strong> ({$selectedObjectInfo.objectType})</p>
+            <p>Status: {$selectedObjectInfo.status}</p>
+            {#if $selectedObjectInfo.objectType === 'plant'}
+                <p>{formatGrowth($selectedObjectInfo.growthProgress)}</p>
+            {/if}
+            <p style="font-size: 0.7em; color: #666;">@ [{$selectedObjectInfo.gridPos.row}, {$selectedObjectInfo.gridPos.col}]</p>
+        </div>
     {/if}
 </div>
 
@@ -144,59 +146,93 @@
         position: absolute;
         top: 10px;
         left: 10px;
-        background-color: rgba(255, 255, 255, 0.8);
+        background-color: rgba(255, 255, 255, 0.85); /* Slightly less transparent */
         padding: 15px;
         border-radius: 8px;
         border: 1px solid #ccc;
-        z-index: 10; /* Ensure it's above the canvas */
+        z-index: 10;
         font-family: sans-serif;
+        width: 220px; /* Give it a fixed width? */
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
     }
     button {
         display: block;
-        margin: 5px 0;
-        padding: 8px 12px;
+        width: 100%; /* Make buttons fill width */
+        box-sizing: border-box; /* Include padding/border in width */
+        margin: 8px 0; /* Increased margin */
+        padding: 10px 12px; /* Slightly bigger padding */
         cursor: pointer;
         border: 1px solid #aaa;
         border-radius: 4px;
         background-color: #eee;
+        text-align: left; /* Align text left */
+        font-size: 0.9em;
     }
     button:hover {
         background-color: #ddd;
     }
     button.selected {
-        background-color: #aaddaa; /* Highlight selected */
+        background-color: #aaddaa;
         border-color: #585;
         font-weight: bold;
     }
     h3, h4 {
-        margin-top: 0;
-        margin-bottom: 5px;
+        margin-top: 10px; /* Add margin above headers */
+        margin-bottom: 8px; /* Increased margin below headers */
+        border-bottom: 1px solid #eee; /* Separator */
+        padding-bottom: 4px;
+    }
+    h3:first-child {
+        margin-top: 0; /* No top margin for the very first header */
     }
     p {
-        font-size: 0.8em;
-        color: #555;
+        font-size: 0.9em; /* Slightly larger base text */
+        color: #333; /* Darker text */
+        margin: 4px 0;
     }
 
     .item-list {
         display: flex;
-        flex-direction: row;
-        gap: 10px;
-        margin-bottom: 10px;
+        flex-wrap: wrap; /* Allow items to wrap */
+        gap: 8px; /* Slightly reduced gap */
+        margin-bottom: 15px; /* Increased margin */
     }
 
     .item {
-        padding: 5px 10px;
+        padding: 6px 10px; /* Adjusted padding */
         border: 1px solid #888;
         border-radius: 5px;
-        background-color: #ddd;
-        cursor: grab; /* Use grab cursor */
-        user-select: none; /* Prevent text selection */
-        -webkit-user-select: none; /* Safari */
-        -moz-user-select: none; /* Firefox */
-        -ms-user-select: none; /* IE */
+        background-color: #e0e0e0; /* Lighter item background */
+        cursor: grab;
+        user-select: none;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        font-size: 0.85em;
+        transition: background-color 0.2s ease; /* Smooth hover */
     }
-
     .item:hover {
         background-color: #ccc;
     }
+
+    /* NEW: Styles for info sections */
+    .info-section {
+        margin-top: 15px;
+        padding-top: 10px;
+        border-top: 1px dashed #ccc; /* Separator */
+    }
+    .info-section h4 {
+        margin-top: 0;
+        margin-bottom: 5px;
+        border-bottom: none; /* Remove double border */
+        font-size: 0.95em;
+    }
+    .info-section p {
+        font-size: 0.85em;
+        margin: 2px 0;
+    }
+    .selection-info strong {
+        color: #0056b3; /* Highlight name */
+    }
+
 </style>

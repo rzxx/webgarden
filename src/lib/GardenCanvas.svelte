@@ -2,7 +2,8 @@
 import { onMount, onDestroy } from 'svelte';
 import * as THREE from 'three';
 import { MathUtils } from 'three'; // For mapLinear and lerp
-import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo } from './stores';
+import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo,
+    availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo } from './stores';
 import { get } from 'svelte/store';
 import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
 import { DRACOLoader } from 'three-stdlib';
@@ -1568,6 +1569,14 @@ function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
 
     console.log(`Performing immediate removal of ${typeId} at [${gridPos.row}, ${gridPos.col}]`);
 
+    const currentSelection = get(selectedObjectInfo);
+    if (currentSelection &&
+        currentSelection.gridPos.row === gridPos.row &&
+        currentSelection.gridPos.col === gridPos.col) {
+        selectedObjectInfo.set(null);
+        console.log("   Cleared selection as the selected object was removed.");
+    }
+
     // --- 1. Remove Object3D from Scene and Dispose ---
     if (objectToRemove.object3D) {
         // Handle Decor Lights
@@ -2173,99 +2182,151 @@ function waterPlantAt(row: number, col: number) {
 
 // --- handleCanvasPointerDown (REWRITTEN for individual objects) ---
 function handleCanvasPointerDown(event: PointerEvent) {
-	if (isPointerDragging || !container || !camera || !scene) return; // Ignore if dragging UI item or refs missing
+	// Ignore if dragging UI item or refs missing
+    if (isPointerDragging || !container || !camera || !scene) return;
 
 	const currentAction = get(selectedAction);
-	if (currentAction?.type !== 'tool') return;
+    const rect = container.getBoundingClientRect();
+    const mouse = new THREE.Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
 
-	isInteracting = true; // Mark interaction start (for tools)
-
-	const raycaster = new THREE.Raycaster();
-	const mouse = new THREE.Vector2();
-	const rect = container.getBoundingClientRect();
-	mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-	mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-	raycaster.setFromCamera(mouse, camera);
-
-	// --- Target Ground + All Placed Objects ---
+    // --- Target Ground + All Placed Objects ---
     const objectsToIntersect: THREE.Object3D[] = [ground];
     allPlants.forEach(p => { if (p.object3D) objectsToIntersect.push(p.object3D); });
     allDecor.forEach(d => { if (d.object3D) objectsToIntersect.push(d.object3D); });
 
-	// Raycast against the list, check recursively INSIDE the object groups
-	const intersects = raycaster.intersectObjects(objectsToIntersect, true); // true = recursive
+    // Raycast against the list, check recursively INSIDE the object groups
+    const intersects = raycaster.intersectObjects(objectsToIntersect, true); // true = recursive
 
-	let interactionOccurred = false;
+    let interactionOccurred = false; // For tools
     let hitInfo: { info: PlantInfo | DecorInfo, type: 'plant' | 'decor' } | null = null;
     let groundHitPoint: THREE.Vector3 | null = null;
+    let objectHit = false; // Did we hit a plant or decor?
 
-	// --- Process Intersects ---
+    // --- Process Intersects ---
     if (intersects.length > 0) {
         for (const intersect of intersects) {
             if (intersect.object === ground && !groundHitPoint) {
                 groundHitPoint = intersect.point; // Record first ground hit
-                // Don't break, an object might be closer
             } else if (intersect.object !== ground) {
-                // Hit something other than ground - likely a mesh within a placed object's group
                 let targetObject = intersect.object;
                 let gridInfo: PlantInfo | DecorInfo | undefined;
 
-                // Traverse up to find the parent Group with our stored gridInfo
                 while (targetObject.parent && !gridInfo) {
                     targetObject = targetObject.parent;
                     gridInfo = targetObject.userData.gridInfo as (PlantInfo | DecorInfo | undefined);
                 }
 
                 if (gridInfo) {
-                    // Found the main object and its associated data
                     const objectType = 'plantTypeId' in gridInfo ? 'plant' : 'decor';
                     hitInfo = { info: gridInfo, type: objectType };
+                    objectHit = true; // Mark that we hit an interactable object
                     console.log(`Raycast direct hit on ${objectType} ${gridInfo.object3D?.userData.typeId} at [${gridInfo.gridPos.row}, ${gridInfo.gridPos.col}]`);
                     break; // Found the target object group, stop searching
-                } else {
-                    // This shouldn't happen if userData is set correctly on placement
-                    console.warn("Raycast hit an object mesh, but couldn't find parent with gridInfo:", intersect.object);
                 }
+                // else: warn already handled inside the loop
             }
         } // End intersect loop
     }
 
-    // --- Perform Action ---
-    if (currentAction.toolType === 'water') {
-        if (hitInfo?.type === 'plant') {
-            waterPlantAt(hitInfo.info.gridPos.row, hitInfo.info.gridPos.col);
-            interactionOccurred = true;
-        } else if (groundHitPoint) {
-            const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
-            if (gridCoords) {
-                const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
-                if (objectInCell && 'plantTypeId' in objectInCell) {
-                    waterPlantAt(gridCoords.row, gridCoords.col); // Use clicked cell coords
-                    interactionOccurred = true;
+    // --- Decide Action: Tool, Selection, or Nothing ---
+
+    if (currentAction?.type === 'tool') {
+        // --- TOOL ACTION ---
+        isInteracting = true; // Mark interaction start (for tools)
+        selectedObjectInfo.set(null); // Clear selection when using a tool
+
+        if (currentAction.toolType === 'water') {
+            if (hitInfo?.type === 'plant') {
+                waterPlantAt(hitInfo.info.gridPos.row, hitInfo.info.gridPos.col);
+                interactionOccurred = true;
+            } else if (groundHitPoint) { // Allow clicking ground near plant
+                const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
+                if (gridCoords) {
+                    const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
+                    if (objectInCell && 'plantTypeId' in objectInCell) {
+                        waterPlantAt(gridCoords.row, gridCoords.col);
+                        interactionOccurred = true;
+                    }
+                }
+            }
+        } else if (currentAction.toolType === 'remove') {
+            if (hitInfo) {
+                removeGridObjectAt(hitInfo.info.gridPos.row, hitInfo.info.gridPos.col);
+                interactionOccurred = true;
+            } else if (groundHitPoint) { // Allow clicking ground near object
+                const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
+                if (gridCoords) {
+                    const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
+                    if (objectInCell) {
+                        removeGridObjectAt(gridCoords.row, gridCoords.col);
+                        interactionOccurred = true;
+                    }
                 }
             }
         }
-    } else if (currentAction.toolType === 'remove') {
-        if (hitInfo) {
-            removeGridObjectAt(hitInfo.info.gridPos.row, hitInfo.info.gridPos.col);
-            interactionOccurred = true;
-        } else if (groundHitPoint) {
-            const gridCoords = worldToGrid(groundHitPoint.x, groundHitPoint.z);
-            if (gridCoords) {
-                const objectInCell = getGridObjectInfoAt(gridCoords.row, gridCoords.col);
-                if (objectInCell) { // Check if *any* object is there
-                    removeGridObjectAt(gridCoords.row, gridCoords.col); // Use clicked cell coords
-                    interactionOccurred = true;
+        // Add other tools if needed
+
+        isInteracting = false; // Tool interaction ends immediately
+        // Actions like remove/water request render internally
+
+    } else if (!isPointerDragging) {
+        // --- SELECTION ACTION (No tool active, not dragging) ---
+        if (objectHit && hitInfo) {
+            // --- Object Clicked: Select it ---
+            const info = hitInfo.info;
+            const typeId = hitInfo.type === 'plant' ? (info as PlantInfo).plantTypeId : (info as DecorInfo).decorTypeId;
+            const objectType = hitInfo.type;
+
+            // Find user-friendly name
+            const availableList = objectType === 'plant' ? availablePlants : availableDecor;
+            const name = availableList.find(item => item.id === typeId)?.name ?? typeId; // Fallback to id
+
+            // Determine status
+            let status = 'OK';
+            let growth: number | undefined = undefined;
+            if (objectType === 'plant') {
+                const plantInfo = info as PlantInfo;
+                status = plantInfo.state === 'healthy' ? 'Healthy' : 'Needs Water';
+                growth = plantInfo.growthProgress;
+                // Add more specific statuses later if needed
+            } else {
+                // Decor status - example: check if lights are on (if applicable)
+                const decorInfo = info as DecorInfo;
+                if (decorInfo.decorTypeId === 'streetLamp' && decorInfo.lightObjects && decorInfo.lightObjects.length > 0) {
+                    // Simple check: if any light is on and visible
+                    const isOn = decorInfo.lightObjects.some(light => light.intensity > 0 && light.visible);
+                    status = isOn ? 'On' : 'Off';
                 }
             }
+
+            // Construct the data payload
+            const displayInfo: SelectedObjectDisplayInfo = {
+                typeId: typeId,
+                name: name,
+                objectType: objectType,
+                status: status,
+                growthProgress: growth,
+                gridPos: { ...info.gridPos }
+            };
+
+            // Update the store
+            selectedObjectInfo.set(displayInfo);
+            console.log("Selected object:", displayInfo);
+            requestRender(); // Request render to potentially show feedback (if added later)
+
+        } else {
+            // --- Empty Space Clicked: Deselect ---
+            selectedObjectInfo.set(null);
+            console.log("Clicked empty space, deselected.");
+            requestRender(); // If there was visual feedback for selection, it needs to be removed
         }
     }
-    // Add other tools if needed
-
-	// --- Finalization ---
-    isInteracting = false; // Tool interaction ends immediately
-    // Request render if needed (actions like remove/water call requestRender internally)
-    // if (interactionOccurred && !isRenderLoopActive) { requestRender(); }
+    // If dragging, do nothing on pointer down in canvas
 }
 // --- End handleCanvasPointerDown ---
 
@@ -2931,6 +2992,7 @@ onMount(() => {
         isPointerDragging = value;
         if (isPointerDragging && !isInteracting && initComplete) {
             console.log("Pointer drag detected, starting interaction loop.");
+            selectedObjectInfo.set(null); // <-- Clear selection on drag start
             isInteracting = true;
             startRenderLoop();
             selectedAction.set(null); // Hide tool selection
