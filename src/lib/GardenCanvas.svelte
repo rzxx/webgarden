@@ -3196,17 +3196,6 @@ onMount(() => {
         }
         console.log("Assets loaded, proceeding with post-load setup...");
 
-        // --- NEW: Initialize Inventory (Example starting values) ---
-        initializeInventory({
-            'fern': 5,
-            'cactus': 3,
-            'bush': 2,
-            'streetLamp': 1
-            // Add other items with their starting quantities
-        });
-        // --- End Inventory Initialization ---
-
-
         // Load saved state AFTER assets are confirmed loaded
         const loaded = loadGardenState(); // loadGardenState now calls placeGridObjectAt
         if (!loaded) {

@@ -1,8 +1,41 @@
 <script lang="ts">
+    import { onMount } from 'svelte'; // Import onMount
     import { selectedAction, availablePlants, availableDecor, type SelectedAction,
-        heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo } from './stores'; // Import new stores
-    import { get } from 'svelte/store'; // Import get
-    import { inventory, getInventoryItemQuantity } from './inventory';
+        heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo } from './stores';
+    import { get } from 'svelte/store';
+    // Assume addInventoryItem exists and is exported from inventory.ts
+    import { inventory, getInventoryItemQuantity, addInventoryItem } from './inventory';
+
+    const DAILY_ITEM_COUNT = 5;
+    const LAST_DAILY_REWARD_KEY = 'lastDailyRewardDate';
+
+    onMount(() => {
+        const today = new Date().toDateString(); // Get date string (YYYY-MM-DD)
+        const lastRewardDate = localStorage.getItem(LAST_DAILY_REWARD_KEY);
+
+        if (lastRewardDate !== today) {
+            console.log("Granting daily items...");
+            const allAvailableItems = [
+                ...availablePlants.map(p => ({ id: p.id, type: 'plant' })),
+                ...availableDecor.map(d => ({ id: d.id, type: 'decor' }))
+            ];
+
+            if (allAvailableItems.length > 0) {
+                for (let i = 0; i < DAILY_ITEM_COUNT; i++) {
+                    const randomIndex = Math.floor(Math.random() * allAvailableItems.length);
+                    const randomItem = allAvailableItems[randomIndex];
+                    addInventoryItem(randomItem.id, 1); // Add 1 of the random item
+                    console.log(`Granted daily item: ${randomItem.id}`);
+                }
+                localStorage.setItem(LAST_DAILY_REWARD_KEY, today); // Update last reward date
+                console.log(`Daily items granted for ${today}.`);
+            } else {
+                console.warn("No available items to grant for daily reward.");
+            }
+        } else {
+            console.log("Daily items already granted today.");
+        }
+    });
 
     function selectTool(toolType: 'water' | 'remove') {
         selectedAction.update(current => {
