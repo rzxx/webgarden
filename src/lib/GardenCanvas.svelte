@@ -5,7 +5,7 @@ import { MathUtils, Vector2 } from 'three'; // For mapLinear and lerp
 import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo,
     availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo } from './stores';
 // --- NEW: Import inventory functions ---
-import { initializeInventory, decrementInventoryItem, getInventoryItemQuantity } from './inventory';
+import { initializeInventory, decrementInventoryItem, getInventoryItemQuantity, incrementInventoryItem } from './inventory';
 import { get } from 'svelte/store';
 import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
 import { DRACOLoader } from 'three-stdlib';
@@ -1596,6 +1596,12 @@ function performImmediateRemoval(objectToRemove: PlantInfo | DecorInfo) {
     const gridPos = objectToRemove.gridPos; // Capture before potential modification
 
     console.log(`Performing immediate removal of ${typeId} at [${gridPos.row}, ${gridPos.col}]`);
+
+    // Add decor back to inventory
+    if (objectType === 'decor') {
+        incrementInventoryItem(typeId); // Add 1 back to inventory
+        console.log(`   Added ${typeId} back to inventory.`);
+    }
 
     const currentSelection = get(selectedObjectInfo);
     if (currentSelection &&
