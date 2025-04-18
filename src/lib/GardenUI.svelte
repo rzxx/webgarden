@@ -2,6 +2,7 @@
     import { selectedAction, availablePlants, availableDecor, type SelectedAction,
         heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo } from './stores'; // Import new stores
     import { get } from 'svelte/store'; // Import get
+    import { inventory, getInventoryItemQuantity } from './inventory';
 
     function selectTool(toolType: 'water' | 'remove') {
         selectedAction.update(current => {
@@ -21,6 +22,15 @@
 
     // --- Pointer Down Handler for Items ---
     function handleItemPointerDown(event: PointerEvent, itemInfo: HeldItemInfo) {
+        // --- Check inventory quantity ---
+        const quantity = getInventoryItemQuantity(itemInfo.typeId);
+        if (quantity <= 0) {
+            console.log(`Cannot pick up ${itemInfo.typeId}, inventory empty.`);
+            // Optional: Add visual feedback like a brief shake or color flash
+            return; // Prevent drag if out of stock
+        }
+        // --- End Inventory Check ---
+
         // Prevent default actions like text selection or browser drag behavior
         event.preventDefault();
 
@@ -36,7 +46,7 @@
         targetElement.setPointerCapture(event.pointerId);
         targetElement.classList.add('grabbing');
 
-        // --- MODIFIED: releaseAndReset only handles UI cleanup ---
+        // --- releaseAndReset only handles UI cleanup ---
         const releaseAndReset = (e: PointerEvent) => {
             // Only act on the specific pointer that was captured by this element
             if (e.pointerId === event.pointerId) {
@@ -89,23 +99,31 @@
     <h4>Plants:</h4>
     <div class="item-list">
         {#each availablePlants as plant}
+            {@const quantity = $inventory.get(plant.id) || 0}
             <div
-                class="item" role="button" tabindex="0"
-                aria-label={`Pick up ${plant.name}`}
+                class="item"
+                class:out-of-stock={quantity <= 0}
+                role="button" tabindex="0"
+                aria-label={`Pick up ${plant.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                aria-disabled={quantity <= 0}
                 on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
                 style="touch-action: none;"
-            >{plant.name}</div>
+            >{plant.name} ({quantity})</div>
         {/each}
     </div>
     <h4>Decor:</h4>
     <div class="item-list">
         {#each availableDecor as decor}
+            {@const quantity = $inventory.get(decor.id) || 0}
             <div
-                class="item" role="button" tabindex="0"
-                aria-label={`Pick up ${decor.name}`}
+                class="item"
+                class:out-of-stock={quantity <= 0}
+                role="button" tabindex="0"
+                aria-label={`Pick up ${decor.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                aria-disabled={quantity <= 0}
                 on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
                 style="touch-action: none;"
-            >{decor.name}</div>
+            >{decor.name} ({quantity})</div>
         {/each}
     </div>
 
@@ -214,8 +232,6 @@
     .item:hover {
         background-color: #ccc;
     }
-
-    /* NEW: Styles for info sections */
     .info-section {
         margin-top: 15px;
         padding-top: 10px;
@@ -230,6 +246,13 @@
     .info-section p {
         font-size: 0.85em;
         margin: 2px 0;
+    }
+    .item.out-of-stock {
+        color: #999;
+        background-color: #f0f0f0;
+        cursor: not-allowed;
+        pointer-events: none; /* Disable pointer events entirely */
+        opacity: 0.6;
     }
     .selection-info strong {
         color: #0056b3; /* Highlight name */

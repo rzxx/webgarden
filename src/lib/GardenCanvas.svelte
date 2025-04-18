@@ -4,6 +4,8 @@ import * as THREE from 'three';
 import { MathUtils, Vector2 } from 'three'; // For mapLinear and lerp
 import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo,
     availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo } from './stores';
+// --- NEW: Import inventory functions ---
+import { initializeInventory, decrementInventoryItem, getInventoryItemQuantity } from './inventory';
 import { get } from 'svelte/store';
 import { GLTFLoader } from 'three-stdlib'; // Import GLTFLoader
 import { DRACOLoader } from 'three-stdlib';
@@ -1843,11 +1845,11 @@ function setInitialDecorLightState(decorInfo: DecorInfo, isNight: boolean) {
 }
 
 /// --- Function to Place Grid Object (REWRITTEN - With Point Light Creation) ---
-function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>, placementRotationY?: number) {
+function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, initialState?: Partial<PlantInfo | DecorInfo>, placementRotationY?: number): boolean {
     // --- Asset Check ---
     if (!assetsLoaded) {
         console.warn(`Assets not loaded yet. Cannot place ${typeId}.`);
-        return;
+        return false;
     }
 
     // --- Get Config and Model Path ---
@@ -1858,7 +1860,7 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
     if (objectType === 'plant') {
         config = plantConfigs[typeId];
         if (!config) {
-            console.error(`No plant config found for id ${typeId}`); return;
+            console.error(`No plant config found for id ${typeId}`); return false;
         }
         // Determine initial stage based on potential initialState or default 0.0
         const initialProgress = (initialState as PlantInfo)?.growthProgress ?? 0.0;
@@ -1867,28 +1869,28 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         const initialStage = getGrowthStageConfig(tempInfo);
         if (!initialStage || !initialStage.modelPath) {
              console.error(`Could not determine initial growth stage or model path for ${typeId} at progress ${initialProgress}.`);
-             return;
+             return false;
         }
         modelPath = initialStage.modelPath;
         objectSize = config.size;
     } else { // Decor
         config = decorConfigs[typeId];
          if (!config) {
-            console.error(`No decor config found for id ${typeId}`); return;
+            console.error(`No decor config found for id ${typeId}`); return false;
         }
         modelPath = config.modelPath;
         objectSize = config.size;
     }
 
     if (!modelPath) { // Should be caught above, but safety check
-        console.error(`No modelPath determined for ${objectType} ${typeId}`); return;
+        console.error(`No modelPath determined for ${objectType} ${typeId}`); return false;
     }
 
     const cachedGltfData = gltfCache[modelPath];
     if (!cachedGltfData || !cachedGltfData.scene) {
         console.error(`Cached GLTF scene missing for ${typeId} using model ${modelPath}. Cannot place.`);
         // TODO: Optionally create a placeholder object here
-        return;
+        return false;
     }
     // --- End Config/Model Path ---
 
@@ -1918,7 +1920,7 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         console.log(`Cannot place ${typeId} of effective size ${placementRows}x${placementCols} at [${row}, ${col}], area not free.`);
 		hidePreviewBox();
         if (!isRenderLoopActive) requestRender();
-        return;
+        return false;
     }
 
     // --- 1. Clone the GLTF Scene ---
@@ -2095,6 +2097,7 @@ function placeGridObjectAt(row: number, col: number, objectType: 'plant' | 'deco
         debouncedSaveGardenState();
         requestRender();
     }
+    return true; // Indicate successful placement
 }
 // --- End Function to Place Grid Object ---
 
@@ -2492,17 +2495,32 @@ function handlePointerUpOrCancel(event: PointerEvent) {
             const intersectPoint = intersects[0].point;
             const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
             if (gridCoords) {
-                console.log(`Attempting pointer place: ${itemToPlace.objectType} - ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}] with rotation ${finalRotationY}`);
-                placeGridObjectAt(
-                    gridCoords.row,
-                    gridCoords.col,
-                    itemToPlace.objectType,
-                    itemToPlace.typeId,
-                    undefined, // No initial state override here (it's for loading)
-                    finalRotationY // *** PASS FINAL ROTATION ***
-                );
-                // placeGridObjectAt requests render if needed and saves state
-                placementOccurred = true;
+                // --- NEW: Check inventory BEFORE placing ---
+                if (getInventoryItemQuantity(itemToPlace.typeId) > 0) {
+                    console.log(`Attempting pointer place: ${itemToPlace.objectType} - ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}] with rotation ${finalRotationY}`);
+                    // placeGridObjectAt returns true on success, false on failure (e.g., area not free)
+                    const success = placeGridObjectAt(
+                        gridCoords.row,
+                        gridCoords.col,
+                        itemToPlace.objectType,
+                        itemToPlace.typeId,
+                        undefined, // No initial state override here (it's for loading)
+                        finalRotationY // *** PASS FINAL ROTATION ***
+                    );
+
+                    if (success) {
+                        // --- NEW: Decrement inventory AFTER successful placement ---
+                        decrementInventoryItem(itemToPlace.typeId);
+                        placementOccurred = true;
+                    } else {
+                         console.log(`Placement failed for ${itemToPlace.typeId} at [${gridCoords.row}, ${gridCoords.col}] (likely area blocked). Inventory not decremented.`);
+                         // No need to explicitly re-increment inventory here, as it wasn't decremented yet.
+                    }
+                } else {
+                    console.warn(`Placement cancelled: ${itemToPlace.typeId} is out of stock (checked at placement time).`);
+                    // Item might have been used up between drag start and drop
+                }
+                // --- End Inventory Check ---
             } else {
                 console.log("Pointer released over canvas, but outside grid.");
             }
@@ -2834,7 +2852,7 @@ function performResize() {
 // debounced resizeHandler
 const resizeHandler = debounce(performResize, 150);
 
-// Add handleBeforeUnload (Moved outside onMount)
+// Add handleBeforeUnload 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
 	console.log('beforeunload triggered, saving state...');
 	debouncedSaveGardenState.flush(); // Force immediate execution if pending
@@ -2845,7 +2863,7 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 };
 
       
-// --- renderFrame (Adjusted for Model Swapping) ---
+// --- renderFrame  ---
 function renderFrame() {
     // --- Capture if this frame was explicitly requested ---
     const wasExplicitlyRequested = renderRequested; // Check BEFORE resetting
@@ -2868,7 +2886,7 @@ function renderFrame() {
     const nowTimestamp = now.getTime();
     const plantsToRemoveFromUpdateList: PlantInfo[] = [];
 
-    // --- Process Active Animations (MODIFIED FOR EASING) ---
+    // --- Process Active Animations  ---
     const completedAnimationsIndices: number[] = [];
     activeAnimations.forEach((anim, index) => {
         const elapsed = perfNow - anim.startTime;
@@ -3178,7 +3196,16 @@ onMount(() => {
         }
         console.log("Assets loaded, proceeding with post-load setup...");
 
-        // REMOVED: setupInstancedMeshes();
+        // --- NEW: Initialize Inventory (Example starting values) ---
+        initializeInventory({
+            'fern': 5,
+            'cactus': 3,
+            'bush': 2,
+            'streetLamp': 1
+            // Add other items with their starting quantities
+        });
+        // --- End Inventory Initialization ---
+
 
         // Load saved state AFTER assets are confirmed loaded
         const loaded = loadGardenState(); // loadGardenState now calls placeGridObjectAt
