@@ -14,7 +14,6 @@
 		{ rows: 1, cols: 2, label: 'Small Horizontal (1x2)' },
 		{ rows: 2, cols: 2, label: 'Medium Square (2x2)' },
 		{ rows: 2, cols: 3, label: 'Medium Wide (2x3)' },
-        { rows: 5, cols: 3, label: 'Large Tall (5x3)' },
 		{ rows: 3, cols: 5, label: 'Large Wide (3x5)' }
 	];
 
