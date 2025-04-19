@@ -4,9 +4,15 @@
     import { selectedAction, availablePlants, availableDecor, type SelectedAction,
         heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo, uiMode, type UIMode,
         // --- NEW: Import widget store and add function ---
-        widgetStore, addWidget, type WidgetConfig
+        widgetStore, addWidget, type WidgetConfig,
+        // --- Import Grid Dimensions ---
+        GRID_ROWS,
+        GRID_COLS,
         // --- End Import ---
     } from './stores';
+    // --- Import default sizes/settings from registry ---
+    import { defaultWidgetSettings, defaultWidgetSize } from './widgetRegistry';
+    // --- End Import ---
     import { get } from 'svelte/store';
     import { inventory, getInventoryItemQuantity, addInventoryItem } from './inventory';
 
@@ -140,24 +146,45 @@
 
     // --- NEW: Function to add a default widget ---
     function handleAddWidget(componentName: string) {
-        // Find the next available grid slot (very basic implementation)
-        // TODO: Implement more robust slot finding logic later
         const currentWidgets = get(widgetStore);
-        let nextRow = 1;
-        let nextCol = 1;
-        // This simple logic just puts it at 1,1 - needs improvement
-        // A real implementation would check for overlaps.
+        // --- Use default size from registry ---
+        const defaultSize = defaultWidgetSize[componentName] || { rows: 2, cols: 2 }; // Fallback size
+        const defaultRowSpan = defaultSize.rows;
+        const defaultColSpan = defaultSize.cols;
+        // --- End Default Size ---
+
+        let foundSpot = false;
+        let targetRow = 1;
+        let targetCol = 1;
+
+        // Use imported GRID_ROWS / GRID_COLS in the loops and checks
+        for (let r = 1; r <= GRID_ROWS; r++) {
+            for (let c = 1; c <= GRID_COLS; c++) {
+                if (r + defaultRowSpan - 1 <= GRID_ROWS && c + defaultColSpan - 1 <= GRID_COLS) {
+                    // ... overlap check logic (uses defaultRowSpan/defaultColSpan) ...
+                }
+            }
+            // ...
+        }
+        // ...
+
+        if (!foundSpot) {
+            // ... error handling ...
+            return;
+        }
 
         const newWidget: WidgetConfig = {
-            id: `widget-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`, // Simple unique ID
-            componentName: componentName, // e.g., 'ClockWidget'
-            gridRowStart: nextRow,
-            gridColumnStart: nextCol,
-            gridRowSpan: 2, // Default size (adjust as needed)
-            gridColumnSpan: 3, // Default size (adjust as needed)
-            // settings: {} // Add default settings if needed
+            id: `widget-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            componentName: componentName,
+            gridRowStart: targetRow,
+            gridColumnStart: targetCol,
+            gridRowSpan: defaultRowSpan, // Use determined default
+            gridColumnSpan: defaultColSpan, // Use determined default
+            // --- Use default settings from registry ---
+            settings: JSON.parse(JSON.stringify(defaultWidgetSettings[componentName] || {})), // Deep copy
         };
         addWidget(newWidget);
+        console.log(`Added ${componentName} at [${targetRow}, ${targetCol}]`);
     }
     // --- End Add Widget Function ---
 

@@ -1,5 +1,11 @@
 import { writable, get } from 'svelte/store';
 
+// --- Grid Configuration ---
+export const GRID_ROWS = 8;
+export const GRID_COLS = 12;
+export const GRID_GAP = 10; // px
+// --- End Grid Configuration ---
+
 // Define possible actions/tools
 export type SelectedAction =
     | { type: 'plant'; plantType: string } // e.g., { type: 'plant', plantType: 'fern' }
@@ -164,4 +170,9 @@ export function updateWidget(updatedWidget: WidgetConfig) {
     });
 }
 
-// --- End Widget System ---
+// Keep the interface if needed by widgets/modal
+export interface WidgetSizeOption {
+    rows: number;
+    cols: number;
+    label: string;
+}

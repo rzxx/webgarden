@@ -4,6 +4,7 @@
   import WidgetContainer from './lib/WidgetContainer.svelte'; // Import the container
   import WidgetGridOverlay from './lib/WidgetGridOverlay.svelte'; // Import the overlay
   import { uiMode } from './lib/stores'; // Import uiMode store
+  import WidgetSettingsModal from './lib/WidgetSettingsModal.svelte'; // Import the modal
 </script>
 
 <main>
@@ -19,6 +20,9 @@
   {#if $uiMode === 'edit'}
     <WidgetGridOverlay />
   {/if}
+
+  <!-- Render the modal (it will control its own visibility) -->
+  <WidgetSettingsModal />
 </main>
 
 <style>
