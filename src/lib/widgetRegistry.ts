@@ -1,7 +1,7 @@
 // Import all available widget components
-import ClockWidget from './widgets/ClockWidget.svelte';
+import ClockDateWidget from './widgets/ClockDateWidget.svelte';
 // Import * as allows access to named exports like sizeOptions
-import * as ClockWidgetModule from './widgets/ClockWidget.svelte';
+import * as ClockDateWidgetModule from './widgets/ClockDateWidget.svelte';
 
 // Import other widgets similarly
 // import WeatherWidget from './widgets/WeatherWidget.svelte';
@@ -12,7 +12,7 @@ import * as ClockWidgetModule from './widgets/ClockWidget.svelte';
  * (the default export). Used for dynamically rendering widgets.
  */
 export const widgetComponentMap: Record<string, any> = {
-    ClockWidget: ClockWidget,
+    ClockDateWidget: ClockDateWidget,
     // WeatherWidget: WeatherWidget,
     // Add other widgets here
 };
@@ -23,18 +23,18 @@ export const widgetComponentMap: Record<string, any> = {
  * Used by the settings modal.
  */
 export const widgetComponentModules: Record<string, any> = {
-    ClockWidget: ClockWidgetModule,
+    ClockDateWidget: ClockDateWidgetModule,
     // WeatherWidget: WeatherWidgetModule,
     // Add other widgets here
 };
 
 // Optional: You could also centralize default settings or other metadata here
 export const defaultWidgetSettings: Record<string, Record<string, any>> = {
-    ClockWidget: {},
+    ClockDateWidget: {},
     // WeatherWidget: { unit: 'C' },
 }
 
 export const defaultWidgetSize: Record<string, { rows: number, cols: number }> = {
-    ClockWidget: { rows: 1, cols: 2 }, // Default to the first size option perhaps
+    ClockDateWidget: { rows: 1, cols: 2 }, // Default to the first size option perhaps
     // WeatherWidget: { rows: 2, cols: 2 },
 }

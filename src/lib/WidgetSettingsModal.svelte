@@ -13,8 +13,9 @@
     let currentWidget: WidgetConfig | null = null;
     let localSettings: Record<string, any> = {}; // Local copy for editing
 
-    // --- NEW: Local state for selected size ---
+    // --- Local state for selected size ---
     let availableSizes: WidgetSizeOption[] = [];
+    let settingsOptions: Array<{ setting: string, options: Array<{ value: any, label: string }> }> = [];
     let selectedSizeKey: string = ''; // Store as "rows-cols" string key
     let selectedRowSpan: number = 1;
     let selectedColSpan: number = 1;
@@ -31,10 +32,10 @@
             // Create a deep copy for local editing to avoid modifying the store directly
             localSettings = currentWidget ? JSON.parse(JSON.stringify(currentWidget.settings || {})) : {};
 
-            // --- FIX: Get size options from the specific widget component module ---
+            // Get size options from the specific widget component module
             const componentModule = widgetComponentModules[componentName];
             availableSizes = componentModule?.sizeOptions || []; // Access exported const from the module
-            // --- End Fix ---
+            settingsOptions = componentModule?.SettingsOptions || [];
 
             if (currentWidget) {
                 selectedRowSpan = currentWidget.gridRowSpan;
@@ -43,6 +44,7 @@
             } else {
                 // Default if something went wrong or no sizes defined
                 availableSizes = [];
+                settingsOptions = [];
                 selectedRowSpan = 1;
                 selectedColSpan = 1;
                 selectedSizeKey = '1-1';
@@ -52,6 +54,7 @@
             currentWidget = null;
             localSettings = {};
             availableSizes = []; // Reset sizes when closed
+            settingsOptions = [];
             selectedSizeKey = '';
         }
     });
@@ -139,11 +142,22 @@
 
             <hr />
 
-            <!-- Dynamic Settings Form Area (Basic Example) -->
-            <div class="form-group">
-                <label for="widget-title">Title:</label>
-                <input type="text" id="widget-title" bind:value={settingTitle} />
-            </div>
+            <!-- Dynamic Settings Form Area -->
+            {#if settingsOptions.length > 0}
+            {#each settingsOptions as settingOpt}
+                <div class="form-group">
+                    <label for={"setting-" + settingOpt.setting}>{settingOpt.setting.charAt(0).toUpperCase() + settingOpt.setting.slice(1)}:</label>
+                    <select
+                        id={"setting-" + settingOpt.setting}
+                        bind:value={localSettings[settingOpt.setting]}
+                    >
+                        {#each settingOpt.options as opt}
+                            <option value={opt.value}>{opt.label}</option>
+                        {/each}
+                    </select>
+                </div>
+            {/each}
+            {/if}
 
             <!-- NEW: Size Selection Dropdown -->
             {#if availableSizes.length > 0}
@@ -220,11 +234,6 @@
     label {
         display: block;
         margin-bottom: 5px;
-    }
-    input[type='text'] {
-        width: 100%;
-        padding: 8px;
-        box-sizing: border-box;
     }
     button.primary {
         background-color: #007bff;

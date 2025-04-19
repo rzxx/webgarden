@@ -287,8 +287,8 @@
         <!-- NEW: Widget Management Section (Edit Mode Only) -->
         <h4>Widgets:</h4>
         <div class="widget-controls">
-             <button on:click={() => handleAddWidget('ClockWidget')}>
-                Add Clock Widget
+            <button on:click={() => handleAddWidget('ClockDateWidget')}>
+                Add Clock and Date Widget
             </button>
             <!-- Add buttons for other widget types here -->
             <!-- <button on:click={() => handleAddWidget('WeatherWidget')}>Add Weather</button> -->
