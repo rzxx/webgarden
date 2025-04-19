@@ -146,45 +146,82 @@
 
     // --- NEW: Function to add a default widget ---
     function handleAddWidget(componentName: string) {
-        const currentWidgets = get(widgetStore);
-        // --- Use default size from registry ---
+        const currentWidgets = get(widgetStore); // Get widgets currently in the store
+
+        // --- Get default size from registry ---
         const defaultSize = defaultWidgetSize[componentName] || { rows: 2, cols: 2 }; // Fallback size
-        const defaultRowSpan = defaultSize.rows;
-        const defaultColSpan = defaultSize.cols;
+        const newWidgetRowSpan = defaultSize.rows;
+        const newWidgetColSpan = defaultSize.cols;
         // --- End Default Size ---
 
         let foundSpot = false;
         let targetRow = 1;
         let targetCol = 1;
 
-        // Use imported GRID_ROWS / GRID_COLS in the loops and checks
+        // Iterate through possible top-left starting positions (r, c)
         for (let r = 1; r <= GRID_ROWS; r++) {
             for (let c = 1; c <= GRID_COLS; c++) {
-                if (r + defaultRowSpan - 1 <= GRID_ROWS && c + defaultColSpan - 1 <= GRID_COLS) {
-                    // ... overlap check logic (uses defaultRowSpan/defaultColSpan) ...
-                }
-            }
-            // ...
-        }
-        // ...
 
+                // --- 1. Check if the widget FITS within grid boundaries ---
+                const fitsHorizontally = (c + newWidgetColSpan - 1 <= GRID_COLS);
+                const fitsVertically = (r + newWidgetRowSpan - 1 <= GRID_ROWS);
+
+                if (fitsHorizontally && fitsVertically) {
+                    // --- 2. Check for OVERLAP with existing widgets ---
+                    let overlaps = false;
+                    const potentialRowEnd = r + newWidgetRowSpan - 1;
+                    const potentialColEnd = c + newWidgetColSpan - 1;
+
+                    for (const existingWidget of currentWidgets) {
+                        const existingRowEnd = existingWidget.gridRowStart + existingWidget.gridRowSpan - 1;
+                        const existingColEnd = existingWidget.gridColumnStart + existingWidget.gridColumnSpan - 1;
+
+                        // Check for rectangle intersection (if they *don't* not overlap, they overlap)
+                        const horizontalOverlap = !(potentialColEnd < existingWidget.gridColumnStart || c > existingColEnd);
+                        const verticalOverlap = !(potentialRowEnd < existingWidget.gridRowStart || r > existingRowEnd);
+
+                        if (horizontalOverlap && verticalOverlap) {
+                            overlaps = true;
+                            break; // Found an overlap, no need to check further for this (r, c)
+                        }
+                    }
+                    // --- End Overlap Check ---
+
+                    // --- 3. If it fits AND does not overlap, we found a spot! ---
+                    if (!overlaps) {
+                        targetRow = r;
+                        targetCol = c;
+                        foundSpot = true;
+                        break; // Exit the inner (column) loop
+                    }
+                }
+            } // End column loop
+            if (foundSpot) {
+                break; // Exit the outer (row) loop if spot found
+            }
+        } // End row loop
+
+        // --- 4. Handle if no spot was found ---
         if (!foundSpot) {
-            // ... error handling ...
+            console.error(`Could not find an empty spot for a ${newWidgetRowSpan}x${newWidgetColSpan} widget.`);
+            alert("No available space on the grid for this widget!"); // User feedback
             return;
         }
 
+        // --- 5. Create and add the new widget ---
         const newWidget: WidgetConfig = {
             id: `widget-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             componentName: componentName,
             gridRowStart: targetRow,
             gridColumnStart: targetCol,
-            gridRowSpan: defaultRowSpan, // Use determined default
-            gridColumnSpan: defaultColSpan, // Use determined default
-            // --- Use default settings from registry ---
-            settings: JSON.parse(JSON.stringify(defaultWidgetSettings[componentName] || {})), // Deep copy
+            gridRowSpan: newWidgetRowSpan, // Use determined default
+            gridColumnSpan: newWidgetColSpan, // Use determined default
+            // Use default settings from registry (deep copy needed)
+            settings: JSON.parse(JSON.stringify(defaultWidgetSettings[componentName] || {})),
         };
-        addWidget(newWidget);
-        console.log(`Added ${componentName} at [${targetRow}, ${targetCol}]`);
+
+        addWidget(newWidget); // Add to the store
+        console.log(`Added ${componentName} widget with ID ${newWidget.id} at [${targetRow}, ${targetCol}]`);
     }
     // --- End Add Widget Function ---
 
