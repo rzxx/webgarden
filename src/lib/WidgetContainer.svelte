@@ -40,6 +40,7 @@
 
 <style>
     .widget-grid-container {
+        padding: 16px;
         position: absolute;
         top: 0;
         left: 0;

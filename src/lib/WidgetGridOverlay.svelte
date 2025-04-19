@@ -323,6 +323,7 @@
         box-sizing: border-box;
         z-index: 6; /* Above widget container */
         pointer-events: none; /* Overlay bg doesn't block */
+        padding: 16px;
     }
 
     .widget-placeholder {
