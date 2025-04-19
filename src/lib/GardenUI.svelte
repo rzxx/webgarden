@@ -155,12 +155,12 @@
         // --- End Default Size ---
 
         let foundSpot = false;
-        let targetRow = 1;
-        let targetCol = 1;
+        let targetRow = 3;
+        let targetCol = 3;
 
         // Iterate through possible top-left starting positions (r, c)
-        for (let r = 1; r <= GRID_ROWS; r++) {
-            for (let c = 1; c <= GRID_COLS; c++) {
+        for (let r = 3; r <= GRID_ROWS; r++) {
+            for (let c = 3; c <= GRID_COLS; c++) {
 
                 // --- 1. Check if the widget FITS within grid boundaries ---
                 const fitsHorizontally = (c + newWidgetColSpan - 1 <= GRID_COLS);
