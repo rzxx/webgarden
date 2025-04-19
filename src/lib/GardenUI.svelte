@@ -155,12 +155,12 @@
         // --- End Default Size ---
 
         let foundSpot = false;
-        let targetRow = 3;
-        let targetCol = 3;
+        let targetRow = 1;
+        let targetCol = 8;
 
         // Iterate through possible top-left starting positions (r, c)
-        for (let r = 3; r <= GRID_ROWS; r++) {
-            for (let c = 3; c <= GRID_COLS; c++) {
+        for (let r = 1; r <= GRID_ROWS; r++) {
+            for (let c = 10; c <= GRID_COLS; c++) {
 
                 // --- 1. Check if the widget FITS within grid boundaries ---
                 const fitsHorizontally = (c + newWidgetColSpan - 1 <= GRID_COLS);
@@ -224,6 +224,11 @@
         console.log(`Added ${componentName} widget with ID ${newWidget.id} at [${targetRow}, ${targetCol}]`);
     }
     // --- End Add Widget Function ---
+
+    function handleRemoveAllWidgets() {
+        widgetStore.set([]); // Clear all widgets
+        console.log("All widgets removed.");
+    }
 
     // Reactive declaration to get the current value for styling
     let currentAction: SelectedAction | null = null;
@@ -292,6 +297,9 @@
             </button>
             <!-- Add buttons for other widget types here -->
             <!-- <button on:click={() => handleAddWidget('WeatherWidget')}>Add Weather</button> -->
+            <button on:click={handleRemoveAllWidgets} style="background-color:#f8d0d0; border-color:#e0a0a0;">
+                Remove All Widgets
+            </button>
         </div>
         <!-- End Widget Management Section -->
 
