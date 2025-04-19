@@ -3,7 +3,7 @@ import { onMount, onDestroy } from 'svelte';
 import * as THREE from 'three';
 import { MathUtils, Vector2 } from 'three'; // For mapLinear and lerp
 import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo,
-    availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo } from './stores';
+    availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo, uiMode } from './stores';
 // --- NEW: Import inventory functions ---
 import { initializeInventory, decrementInventoryItem, getInventoryItemQuantity, incrementInventoryItem } from './inventory';
 import { get } from 'svelte/store';
@@ -2222,6 +2222,9 @@ function handleCanvasPointerDown(event: PointerEvent) {
     if (isPointerDragging || !container || !camera || !scene || event.button !== 0) return;
 
 	const currentAction = get(selectedAction);
+    if (get(uiMode) !== 'edit' && currentAction?.type !== 'tool') return;
+    else if (get(uiMode) !== 'edit' && currentAction?.type === 'tool' && currentAction.toolType !== "water") return;
+
     const rect = container.getBoundingClientRect();
     const mouse = new THREE.Vector2(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,

@@ -1,9 +1,10 @@
 <script lang="ts">
-    import { onMount } from 'svelte'; // Import onMount
+    import { onMount } from 'svelte';
+    // --- Import uiMode store ---
     import { selectedAction, availablePlants, availableDecor, type SelectedAction,
-        heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo } from './stores';
+        heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo, uiMode, type UIMode } from './stores';
+    // --- End Import ---
     import { get } from 'svelte/store';
-    // Assume addInventoryItem exists and is exported from inventory.ts
     import { inventory, getInventoryItemQuantity, addInventoryItem } from './inventory';
 
     const DAILY_ITEM_COUNT = 5;
@@ -37,7 +38,29 @@
         }
     });
 
+    // --- Update toggle function to use the store ---
+    function toggleUIMode() {
+        uiMode.update(currentMode => {
+            const newMode = currentMode === 'view' ? 'edit' : 'view';
+            // Deselect tool/item when switching modes
+            selectedAction.set(null);
+            heldItem.set(null);
+            isDraggingItem.set(false);
+            selectedObjectInfo.set(null); // Also clear selection info
+            console.log(`Switched UI mode to: ${newMode}`);
+            return newMode;
+        });
+    }
+    // --- End Update ---
+
     function selectTool(toolType: 'water' | 'remove') {
+        // --- Use store value for check ---
+        if (toolType === 'remove' && get(uiMode) !== 'edit') { // Use get(uiMode)
+            console.warn("Cannot select remove tool in view mode.");
+            return;
+        }
+        // --- End Check ---
+
         selectedAction.update(current => {
             const newAction: SelectedAction = { type: 'tool', toolType: toolType };
              // If dragging, cancel drag first
@@ -55,6 +78,13 @@
 
     // --- Pointer Down Handler for Items ---
     function handleItemPointerDown(event: PointerEvent, itemInfo: HeldItemInfo) {
+        // --- Use store value for check ---
+        if (get(uiMode) !== 'edit') { // Use get(uiMode)
+            console.warn("Cannot pick up items in view mode.");
+            return;
+        }
+        // --- End Check ---
+
         // --- Check inventory quantity ---
         const quantity = getInventoryItemQuantity(itemInfo.typeId);
         if (quantity <= 0) {
@@ -125,52 +155,58 @@
     }
 </script>
 
+<!-- Use $uiMode store subscription in the template -->
 <div class="ui-panel">
     <h3>Toolbox</h3>
 
-    <!-- Item Selection -->
-    <h4>Plants:</h4>
-    <div class="item-list">
-        {#each availablePlants as plant}
-            {@const quantity = $inventory.get(plant.id) || 0}
-            <div
-                class="item"
-                class:out-of-stock={quantity <= 0}
-                role="button" tabindex="0"
-                aria-label={`Pick up ${plant.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
-                aria-disabled={quantity <= 0}
-                on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
-                style="touch-action: none;"
-            >{plant.name} ({quantity})</div>
-        {/each}
-    </div>
-    <h4>Decor:</h4>
-    <div class="item-list">
-        {#each availableDecor as decor}
-            {@const quantity = $inventory.get(decor.id) || 0}
-            <div
-                class="item"
-                class:out-of-stock={quantity <= 0}
-                role="button" tabindex="0"
-                aria-label={`Pick up ${decor.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
-                aria-disabled={quantity <= 0}
-                on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
-                style="touch-action: none;"
-            >{decor.name} ({quantity})</div>
-        {/each}
-    </div>
+    <button on:click={toggleUIMode} class="mode-toggle">
+        {$uiMode === 'view' ? 'Switch to Edit Mode' : 'Switch to View Mode'}
+    </button>
 
-    <!-- Tool Selection -->
+    {#if $uiMode === 'edit'}
+        <h4>Plants:</h4>
+        <div class="item-list">
+            {#each availablePlants as plant}
+                {@const quantity = $inventory.get(plant.id) || 0}
+                <div
+                    class="item"
+                    class:out-of-stock={quantity <= 0}
+                    role="button" tabindex="0"
+                    aria-label={`Pick up ${plant.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                    aria-disabled={quantity <= 0}
+                    on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
+                    style="touch-action: none;"
+                >{plant.name} ({quantity})</div>
+            {/each}
+        </div>
+        <h4>Decor:</h4>
+        <div class="item-list">
+            {#each availableDecor as decor}
+                {@const quantity = $inventory.get(decor.id) || 0}
+                <div
+                    class="item"
+                    class:out-of-stock={quantity <= 0}
+                    role="button" tabindex="0"
+                    aria-label={`Pick up ${decor.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                    aria-disabled={quantity <= 0}
+                    on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
+                    style="touch-action: none;"
+                >{decor.name} ({quantity})</div>
+            {/each}
+        </div>
+    {/if} <!-- End Edit Mode Item Selection -->
+
     <h4>Tools:</h4>
     <button on:click={() => selectTool('water')} class:selected={isSelected({ type: 'tool', toolType: 'water' })}>
         Watering Can {@html isSelected({ type: 'tool', toolType: 'water' }) ? ' (Selected)' : ''}
     </button>
-    <button on:click={() => selectTool('remove')} class:selected={isSelected({ type: 'tool', toolType: 'remove' })}>
-        Shovel {@html isSelected({ type: 'tool', toolType: 'remove' }) ? ' (Selected)' : ''}
-    </button>
+    {#if $uiMode === 'edit'}
+        <button on:click={() => selectTool('remove')} class:selected={isSelected({ type: 'tool', toolType: 'remove' })}>
+            Shovel {@html isSelected({ type: 'tool', toolType: 'remove' }) ? ' (Selected)' : ''}
+        </button>
+    {/if}
 
-    <!-- Drag Controls Info -->
-    {#if $heldItem}
+    {#if $uiMode === 'edit' && $heldItem}
         <div class="info-section drag-info">
             <h4>Dragging: {$heldItem.typeId}</h4>
             <p>Move to grid & release to place.</p>
@@ -178,8 +214,7 @@
         </div>
     {/if}
 
-    <!-- NEW: Selected Object Info Display -->
-    {#if $selectedObjectInfo && !$heldItem && !currentAction}
+    {#if $uiMode === 'edit' && $selectedObjectInfo && !$heldItem && !currentAction}
         <div class="info-section selection-info">
             <h4>Selection:</h4>
             <p><strong>{$selectedObjectInfo.name}</strong> ({$selectedObjectInfo.objectType})</p>
@@ -291,4 +326,15 @@
         color: #0056b3; /* Highlight name */
     }
 
+    /* Style for the mode toggle button */
+    .mode-toggle {
+        background-color: #d0e0f0; /* Light blue background */
+        border-color: #a0c0e0;
+        margin-bottom: 15px; /* Add space below */
+        text-align: center; /* Center text */
+        font-weight: bold;
+    }
+    .mode-toggle:hover {
+        background-color: #b0d0f0;
+    }
 </style>
