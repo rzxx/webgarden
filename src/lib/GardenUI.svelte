@@ -1,9 +1,12 @@
 <script lang="ts">
     import { onMount } from 'svelte';
-    // --- Import uiMode store ---
+    // --- Import stores ---
     import { selectedAction, availablePlants, availableDecor, type SelectedAction,
-        heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo, uiMode, type UIMode } from './stores';
-    // --- End Import ---
+        heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo, uiMode, type UIMode,
+        // --- NEW: Import widget store and add function ---
+        widgetStore, addWidget, type WidgetConfig
+        // --- End Import ---
+    } from './stores';
     import { get } from 'svelte/store';
     import { inventory, getInventoryItemQuantity, addInventoryItem } from './inventory';
 
@@ -135,6 +138,28 @@
     }
     // --- End Pointer Down Handler ---
 
+    // --- NEW: Function to add a default widget ---
+    function handleAddWidget(componentName: string) {
+        // Find the next available grid slot (very basic implementation)
+        // TODO: Implement more robust slot finding logic later
+        const currentWidgets = get(widgetStore);
+        let nextRow = 1;
+        let nextCol = 1;
+        // This simple logic just puts it at 1,1 - needs improvement
+        // A real implementation would check for overlaps.
+
+        const newWidget: WidgetConfig = {
+            id: `widget-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`, // Simple unique ID
+            componentName: componentName, // e.g., 'ClockWidget'
+            gridRowStart: nextRow,
+            gridColumnStart: nextCol,
+            gridRowSpan: 2, // Default size (adjust as needed)
+            gridColumnSpan: 3, // Default size (adjust as needed)
+            // settings: {} // Add default settings if needed
+        };
+        addWidget(newWidget);
+    }
+    // --- End Add Widget Function ---
 
     // Reactive declaration to get the current value for styling
     let currentAction: SelectedAction | null = null;
@@ -194,6 +219,18 @@
                 >{decor.name} ({quantity})</div>
             {/each}
         </div>
+
+        <!-- NEW: Widget Management Section (Edit Mode Only) -->
+        <h4>Widgets:</h4>
+        <div class="widget-controls">
+             <button on:click={() => handleAddWidget('ClockWidget')}>
+                Add Clock Widget
+            </button>
+            <!-- Add buttons for other widget types here -->
+            <!-- <button on:click={() => handleAddWidget('WeatherWidget')}>Add Weather</button> -->
+        </div>
+        <!-- End Widget Management Section -->
+
     {/if} <!-- End Edit Mode Item Selection -->
 
     <h4>Tools:</h4>
@@ -337,4 +374,19 @@
     .mode-toggle:hover {
         background-color: #b0d0f0;
     }
+
+    /* NEW: Styles for widget controls */
+    .widget-controls {
+        margin-bottom: 15px; /* Add space below */
+    }
+    .widget-controls button {
+        background-color: #e0d0f0; /* Light purple background */
+        border-color: #c0a0e0;
+        font-size: 0.85em; /* Slightly smaller */
+        padding: 8px 10px;
+    }
+     .widget-controls button:hover {
+        background-color: #d0b0e8;
+    }
+    /* --- End Widget Control Styles --- */
 </style>
