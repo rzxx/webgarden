@@ -142,13 +142,16 @@ let allPlants: Set<PlantInfo> = new Set();
 let allDecor: Set<DecorInfo> = new Set();
 // --- Grid Objects tracking ---
 
-//// --- Bounding Boxes / Preview (Keep mostly as is) ---
+//// --- Bounding Boxes / Preview ---
 let previewGroup: THREE.Group | null = null;
 let previewMeshes: THREE.Mesh[] = [];
 const MAX_PREVIEW_CELLS = 16;
 let validPlacementMaterial: THREE.MeshBasicMaterial;
 let invalidPlacementMaterial: THREE.MeshBasicMaterial;
 let lastPreviewGridPos: { row: number; col: number } | null = null;
+let currentPreviewModel: THREE.Group | null = null; // Holds the cloned GLTF for preview
+let previewMaterialValid: THREE.MeshBasicMaterial;
+let previewMaterialInvalid: THREE.MeshBasicMaterial;
 const THROTTLE_DRAGOVER_MS = 75;
 // --- End Bounding Boxes ---
 
@@ -1397,6 +1400,180 @@ function hidePreviewBox() {
 	lastPreviewGridPos = null; // Reset last position
 }
 
+/** Clears the current 3D preview model from the scene and disposes it */
+function clearPreviewModel() {
+    if (currentPreviewModel) {
+        scene.remove(currentPreviewModel);
+        // Dispose geometry and materials
+        currentPreviewModel.traverse((child) => {
+             if (child instanceof THREE.Mesh) {
+                child.geometry?.dispose();
+                // Materials are the shared previewMaterialValid/Invalid,
+                // no need to dispose them here unless they were cloned per object.
+                // If we cloned materials:
+                // if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                // else child.material?.dispose();
+            }
+        });
+        console.log("Cleared and disposed previous preview model.");
+    }
+    currentPreviewModel = null;
+}
+
+/** Sets up the 3D preview model based on the held item */
+function setupPreviewModel(item: HeldItemInfo) {
+    let modelPath: string | null = null;
+    let config: PlantConfig | DecorConfig | undefined;
+    let baseScale = 1.0; // Default scale multiplier
+
+    if (item.objectType === 'plant') {
+        // For preview, always use the final growth stage model
+        const plantConfig = plantConfigs[item.typeId] ?? plantConfigs.default;
+        if (plantConfig?.growthStages?.length > 0) {
+            modelPath = plantConfig.growthStages[plantConfig.growthStages.length - 1].modelPath;
+            config = plantConfig;
+            // You might want a specific preview scale from config if available
+            // baseScale = plantConfig.previewScale ?? plantConfig.maxScale ?? 1.0;
+        }
+    } else { // Decor
+        const decorConfig = decorConfigs[item.typeId];
+        modelPath = decorConfig?.modelPath;
+        config = decorConfig;
+        baseScale = decorConfig?.baseScale ?? 1.0;
+    }
+
+    if (!modelPath) {
+        console.error(`Preview: Could not find model path for ${item.typeId}.`);
+        // Consider falling back to plane preview or showing nothing
+        hidePreviewModel(); // Ensure it's hidden
+        return;
+    }
+
+    const cachedData = gltfCache[modelPath];
+    if (!cachedData || !cachedData.scene) {
+        console.error(`Preview: GLTF data for ${modelPath} not found in cache.`);
+        // Consider fallback
+        hidePreviewModel();
+        return;
+    }
+
+    // Clone the model
+    currentPreviewModel = SkeletonUtils.clone(cachedData.scene) as THREE.Group;
+    currentPreviewModel.visible = false; // Start invisible until positioned
+
+    // Apply initial invalid material (will be updated on first move)
+    setPreviewModelMaterial(currentPreviewModel, false);
+
+    scene.add(currentPreviewModel);
+    console.log(`Preview: Cloned ${modelPath} for preview.`);
+}
+
+/** Applies the valid or invalid material to all meshes in the preview model */
+function setPreviewModelMaterial(modelInstance: THREE.Group | null, isValid: boolean) {
+    if (!modelInstance) return;
+    const targetMaterial = isValid ? previewMaterialValid : previewMaterialInvalid;
+    modelInstance.traverse((child) => {
+        if (child instanceof THREE.Mesh) {
+            child.material = targetMaterial;
+            // Ensure shadows are off for the preview to avoid artifacts/cost
+            child.castShadow = false;
+            child.receiveShadow = false;
+        }
+    });
+}
+
+/** Hides the 3D preview model */
+function hidePreviewModel() {
+    if (currentPreviewModel) {
+        currentPreviewModel.visible = false;
+    }
+     lastPreviewGridPos = null; // Reset position tracking when hiding
+}
+
+/** Updates the transform and color of the 3D preview model */
+function updatePreviewModelTransformAndColor(
+    gridCoords: { row: number; col: number } | null,
+    isValid: boolean,
+    rotationY: number
+) {
+    if (!gridCoords || !currentPreviewModel || !currentHeldItem) {
+        hidePreviewModel();
+        return;
+    }
+
+    // Make sure it's visible if we have coordinates
+    currentPreviewModel.visible = true;
+
+    // --- Get Config & Cached Data ---
+    let config: PlantConfig | DecorConfig | undefined;
+    let modelPath: string | null = null;
+    let baseScaleMultiplier = 1.0; // From decor/plant config
+
+    if (currentHeldItem.objectType === 'plant') {
+        config = plantConfigs[currentHeldItem.typeId] ?? plantConfigs.default;
+        // Use last stage model path for consistency with setupPreviewModel
+        modelPath = config?.growthStages?.[config.growthStages.length - 1]?.modelPath ?? null;
+         // Determine scale multiplier (use maxScale or a specific preview scale)
+        baseScaleMultiplier = (config as PlantConfig)?.maxScale ?? 1.0;
+    } else {
+        config = decorConfigs[currentHeldItem.typeId];
+        modelPath = config?.modelPath;
+        baseScaleMultiplier = (config as DecorConfig)?.baseScale ?? 1.0;
+    }
+
+    if (!config || !modelPath) {
+         console.error("Preview update: Config or modelPath missing.");
+         hidePreviewModel();
+         return;
+    }
+    const cachedGltfData = gltfCache[modelPath];
+     if (!cachedGltfData) {
+         console.error(`Preview update: Cached data missing for ${modelPath}`);
+         hidePreviewModel();
+         return;
+     }
+
+    // --- Calculate Transform (borrowed from updatePlantVisuals/updateDecorVisuals) ---
+    const itemSize = config.size; // Size from the config
+
+    // Calculate effective size based on *preview* rotation
+    let effectiveRows = itemSize.rows;
+    let effectiveCols = itemSize.cols;
+    const isRotated90 = Math.abs(rotationY - Math.PI / 2) < 0.01 || Math.abs(rotationY + Math.PI / 2) < 0.01;
+    if (isRotated90) {
+        [effectiveRows, effectiveCols] = [effectiveCols, effectiveRows]; // Swap
+    }
+
+    // Use base scale multiplier defined in config
+    const baseOccupancyWorldSize = Math.max(itemSize.rows, itemSize.cols) * CELL_SIZE;
+    const targetVisualSize = baseScaleMultiplier * baseOccupancyWorldSize;
+
+    const modelNormalizationScale = cachedGltfData.baseScale; // Scale to make model unit size
+    const finalScale = modelNormalizationScale * targetVisualSize;
+
+    // Center based on the *original* item size (not rotated effective size)
+    const worldPosCenter = gridAreaCenterToWorld(gridCoords.row, gridCoords.col, itemSize.rows, itemSize.cols);
+
+    const offsetX = cachedGltfData.centerOffsetX * finalScale;
+    const offsetY = cachedGltfData.centerOffsetY * finalScale; // Place base at y=0
+    const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
+
+    // Apply transform
+    currentPreviewModel.position.set(
+        worldPosCenter.x + offsetX,
+        worldPosCenter.y + offsetY + 0.02, // Lift slightly above ground
+        worldPosCenter.z + offsetZ
+    );
+    currentPreviewModel.scale.set(finalScale, finalScale, finalScale);
+	currentPreviewModel.rotation.set(0, rotationY, 0);
+
+    // Update material color
+    setPreviewModelMaterial(currentPreviewModel, isValid);
+
+    // Store last grid position
+    lastPreviewGridPos = gridCoords;
+}
+
 // --- Function to Update Plant Growth ---
 function updatePlantGrowth(plantInfo: PlantInfo): boolean {
 	// ... (Keep your existing updatePlantGrowth logic - no changes needed here)
@@ -2265,11 +2442,10 @@ function handleCanvasPointerDown(event: PointerEvent) {
 // --- End handleCanvasPointerDown ---
 
 // --- NEW: Pointer Move Handler (for dragging items) ---
-// Use throttle settings from the old dragover logic
-const THROTTLE_POINTER_MOVE_MS = 50; // Reduced slightly for responsiveness? Or keep 75ms.
 
 const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
     if (!isPointerDragging || !currentHeldItem || !container || !camera || !ground) {
+        hidePreviewModel();
         // console.log("throttledPointerMoveLogic skipped: not dragging or missing refs");
         return;
     }
@@ -2305,13 +2481,28 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
         const gridCoords = worldToGrid(intersectPoint.x, intersectPoint.z);
 
         if (gridCoords) {
-            // Optimization: Only update preview if grid cell or rotation changed
-            // We already update on rotation change via togglePreviewRotation,
-            // so just checking grid position change here is okay.
+            const config = currentHeldItem.objectType === 'plant'
+                ? plantConfigs[currentHeldItem.typeId]
+                : decorConfigs[currentHeldItem.typeId];
+
+            if (!config) { // Config missing safety check
+                hidePreviewModel();
+                return;
+            }
+            const baseSize = config.size;
+            let effectiveRows = baseSize.rows;
+            let effectiveCols = baseSize.cols;
+            const isRotated90 = Math.abs(previewRotationY - Math.PI / 2) < 0.01 || Math.abs(previewRotationY + Math.PI / 2) < 0.01;
+            if (isRotated90) {
+                [effectiveRows, effectiveCols] = [effectiveCols, effectiveRows];
+            }
+
+            const isValid = isAreaFree(gridCoords.row, gridCoords.col, effectiveRows, effectiveCols);
+
             if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
                 // console.log("Pointer move update preview:", gridCoords);
                 // *** PASS CURRENT ROTATION ***
-                updatePreviewBox(gridCoords.row, gridCoords.col, currentHeldItem!.objectType, currentHeldItem!.typeId, previewRotationY);
+                updatePreviewModelTransformAndColor(gridCoords, isValid, previewRotationY);
                  // Render loop should be running, no explicit request needed here normally
                  // if (!isRenderLoopActive) requestRender();
             }
@@ -2327,7 +2518,7 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
         hidePreviewBox();
         // if (!isRenderLoopActive) requestRender();
     }
-}, THROTTLE_POINTER_MOVE_MS);
+}, THROTTLE_DRAGOVER_MS);
 
 function handlePointerMove(event: PointerEvent) {
     // Only process if dragging an item
@@ -2358,12 +2549,15 @@ function handlePointerUpOrCancel(event: PointerEvent) {
 
     // --- Clean up drag state ---
     hidePreviewBox(); // Hide preview immediately
+    hidePreviewModel();
+    clearPreviewModel();
     heldItem.set(null); // Clear the store
     isDraggingItem.set(false); // Clear the store
     isInteracting = false; // Stop interaction state
     previewRotationY = 0; // *** RESET PREVIEW ROTATION ***
     lastPreviewGridPos = null; // Reset last grid pos
     stopRenderLoop();   // Stop the render loop explicitly
+    requestRender();
 
     let placementOccurred = false;
 
@@ -2465,21 +2659,11 @@ function handleWheel(event: WheelEvent) {
 * counter-clockwise (direction=-1).
 */
 function rotatePreview(direction: 1 | -1) {
-    if (!currentHeldItem) return; // Should not happen if called correctly, but safety first
+    if (!isPointerDragging || !currentHeldItem || !currentPreviewModel) return;
 
     // Find the index of the current rotation (handle potential float errors)
-    let currentIndex = -1;
-    for(let i = 0; i < numRotations; i++) {
-        if (Math.abs(previewRotationY - rotationSequence[i]) < 0.01) {
-            currentIndex = i;
-            break;
-        }
-    }
-    // If not found (e.g., first rotation), assume index 0
+    let currentIndex = rotationSequence.findIndex(r => Math.abs(previewRotationY - r) < 0.01);
     if (currentIndex === -1) currentIndex = 0;
-
-    // Calculate the next index, wrapping around using modulo
-    // Adding numRotations before modulo handles negative results correctly
     const nextIndex = (currentIndex + direction + numRotations) % numRotations;
     previewRotationY = rotationSequence[nextIndex];
 
@@ -2487,8 +2671,27 @@ function rotatePreview(direction: 1 | -1) {
 
     // Force preview update with new rotation
     if (lastPreviewGridPos) {
-        updatePreviewBox(lastPreviewGridPos.row, lastPreviewGridPos.col, currentHeldItem.objectType, currentHeldItem.typeId, previewRotationY);
-    }
+        const config = currentHeldItem.objectType === 'plant'
+            ? plantConfigs[currentHeldItem.typeId]
+            : decorConfigs[currentHeldItem.typeId];
+
+        if (!config) return; // Safety check
+
+        const baseSize = config.size;
+        let effectiveRows = baseSize.rows;
+        let effectiveCols = baseSize.cols;
+        const isRotated90 = Math.abs(previewRotationY - Math.PI / 2) < 0.01 || Math.abs(previewRotationY + Math.PI / 2) < 0.01;
+        if (isRotated90) {
+            [effectiveRows, effectiveCols] = [effectiveCols, effectiveRows];
+        }
+        const isValid = isAreaFree(lastPreviewGridPos.row, lastPreviewGridPos.col, effectiveRows, effectiveCols);
+
+        // Update transform (including new rotation) and color
+        updatePreviewModelTransformAndColor(lastPreviewGridPos, isValid, previewRotationY);
+        } else {
+            // If we don't have a last position, just update rotation; it will be positioned on next move
+            currentPreviewModel.rotation.y = previewRotationY;
+        }
 }
 
 // --- Asset Loading Function (Modified) ---
@@ -2948,8 +3151,13 @@ onMount(() => {
             selectedObjectInfo.set(null); // <-- Clear selection on drag start
             updateSelectionOutline(null);
             isInteracting = true;
-            startRenderLoop();
             selectedAction.set(null); // Hide tool selection
+            hidePreviewBox();
+            clearPreviewModel(); // Clear any previous model first
+            if (currentHeldItem) {
+                setupPreviewModel(currentHeldItem);
+            }
+            startRenderLoop();
         }
         // Stop handled by pointer up/cancel
     });
@@ -3044,6 +3252,18 @@ onMount(() => {
 		previewMeshes.push(plane);
 		previewGroup.add(plane);
 	}
+    previewMaterialValid = new THREE.MeshBasicMaterial({
+        color: 0x00ff00, // Green
+        opacity: 0.7,
+        transparent: true,
+        // side: THREE.DoubleSide // Usually not needed for solid models
+    });
+    previewMaterialInvalid = new THREE.MeshBasicMaterial({
+        color: 0xff0000, // Red
+        opacity: 0.7,
+        transparent: true,
+        // side: THREE.DoubleSide
+    });
     
     // Post-Processing
     composer = new EffectComposer(renderer);
