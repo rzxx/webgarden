@@ -1,37 +1,37 @@
 # 3D WebGarden
 
-[Русский 👈](README.md)
+[English 👈](README_en.md)
 
-Hosted at [3d-webgarden.netlify.app](https://3d-webgarden.netlify.app/). Start setting up your corner of the internet now!
+Хостится на [3d-webgarden.netlify.app](https://3d-webgarden.netlify.app/). Начни обустраивать свой уголок интернета уже сейчас!
 
-## What is it?
+## Что это?
 
-A web application built with Svelte using Three.js. It includes a 3D editor for a personal garden and a system of customizable widgets.
+Веб-приложение, созданное на Svelte с использованием Three.js. Оно включает в себя 3D-редактор персонального сада и систему кастомизируемых виджетов.
 
-**Mobile device support is not provided! Expect bugs and unstable perfomance.**
+**Поддержка мобильных устройств не предусмотрена! Возможны ошибки и нестабильная работа.**
 
-## Features
+## Возможности
 
-Currently available:
+В данный момент доступно:
 
-- Placing and removing plants and decor.
-- Caring for plants *(watering)*.
-- Observing the change of day and night *(linked to device time!)*.
-- Adding widgets to the screen *(currently only time and date, in development)*.
+- Расставлять и убирать растения и декор.
+- Ухаживать за растениями *(поливать)*.
+- Наблюдать смену дня и ночи *(связано с временем на устройстве!)*.
+- Добавлять виджеты на экран *(пока только время и дата, в разработке)*.
 
-## How to use it?
+## Как этим пользоваться?
 
-The application has two modes: viewing and editing. You can switch between them using the **gear button in the lower right corner (⚙️)**.
+В приложении есть два режима: просмотр и редактирование. Между ними можно переключаться через **кнопку шестерёнки в правом нижнем углу (⚙️)**.
 
-### Viewing Mode
+### Режим просмотра
 
-**Minimal interface** - only watering plants is possible.
+**Минимальный интерфейс** - возможно только поливать растения.
 
-### Editing Mode
+### Режим редактирования
 
-All changes happen here. Here are the main elements:
+Все изменения происходят здесь. Вот основные элементы:
 
-- **Panel with inventory and tools (watering, removing objects).** This panel displays all available objects for placement with their quantity, as well as tool buttons (watering, removing). *To place an object, drag the object icon onto the garden plane.*
-- **Widget management panel.** *In development!* Here you can add available widgets and delete all of them at once.
-- **Selected object panel.** **Click on any object on the plane to see information about it.**
-- **Widget editing.** For each widget placed on the screen, delete and settings editing buttons appear.
+- **Панель с инвентарём и инструментами (полив, удаление объектов).** Здесь тображаются все доступные для размещения объекты с указанием их количества, а также кнопки инструментов (полив, удаление) *Чтобы поставить объект, перетащи иконку объекта на плоскость сада.*
+- **Панель управления виджетами.** *В разработке!* Здесь можно добавить доступные виджеты и удалить все сразу.
+- **Панель выделенного объекта.** **Нажми на любой объект на плоскости, чтобы увидеть информацию о нём.**
+- **Редактирование виджета.** У каждого виджета, размещённого на экране, появляются кнопки удаления и редактирования настроек.
