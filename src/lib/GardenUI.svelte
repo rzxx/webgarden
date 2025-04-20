@@ -294,9 +294,9 @@
     
 </script>
 
-<div>
+<div class="">
     <!-- Right Bottom Corner Buttons: Watering and uiMode Changer -->
-    <div class="absolute xl:bottom-2 bottom-4 xl:right-4 right-6 flex items-end gap-2">
+    <div class="fixed xl:bottom-2 bottom-4 xl:right-4 right-6 flex items-end gap-2">
         <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
         data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
         data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105 data-[visible=false]:translate-y-24
@@ -317,7 +317,7 @@
         </button>
     </div>
 
-    <div class="absolute left-1/2 -translate-x-1/2 bottom-2 flex
+    <div class="fixed left-1/2 -translate-x-1/2 bottom-2 flex
     bg-white rounded-lg p-2 xl:p-4
     transition duration-150 data-[visible=false]:translate-y-28" data-visible={$uiMode==='edit'}>
         <!-- Items List -->
@@ -458,7 +458,7 @@
         </div>
     </div>
     <!-- Widgets -->
-    <div class="hidden xl:flex absolute right-14 bottom-2 flex-col
+    <div class="hidden xl:flex fixed right-14 bottom-2 flex-col
     bg-brighterblack rounded-lg px-4 py-2 gap-4
     transition duration-150 data-[visible=false]:translate-y-40" data-visible={$uiMode==='edit'}>
         <p class='text-white mx-auto font-bold text-lg'>Widgets</p>
@@ -476,7 +476,7 @@
         </button>
     </div>
     <!-- Selected Object -->
-    <div class="absolute left-1/2 -translate-x-1/2 top-2 flex items-center gap-4
+    <div class="fixed left-1/2 -translate-x-1/2 top-2 flex items-center gap-4
     bg-white rounded-lg p-2
     transition duration-150 data-[visible=false]:-translate-y-16 data-[visible=false]:scale-0" data-visible={isSelectionInfoVisible || false}>
     {#if $selectedObjectInfo}
