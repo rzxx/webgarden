@@ -93,9 +93,15 @@
 
     onMount(() => {
 		requestAnimationFrame(() => {
-			updateCellDimensions();
-			resizeObserver = new ResizeObserver(updateCellDimensions);
-			if (gridOverlayElement) { resizeObserver.observe(gridOverlayElement); }
+			if (gridOverlayElement && gridOverlayElement.offsetParent !== null) {
+                updateCellDimensions(); // Initial calculation
+                resizeObserver = new ResizeObserver(updateCellDimensions);
+                resizeObserver.observe(gridOverlayElement);
+            } else if (gridOverlayElement) {
+                 console.log("WidgetGridOverlay initially hidden, ResizeObserver not attached.");
+                 // Consider adding logic here to attach the observer if/when it becomes visible,
+                 // e.g., using another ResizeObserver on a parent or a store subscription.
+            }
 		});
 	});
 
