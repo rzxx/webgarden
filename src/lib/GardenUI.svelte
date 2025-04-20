@@ -275,16 +275,13 @@
         return 'unknown-type'; // Fallback for unexpected objectType
     }
 
-    // Reactive declaration to get the current value for styling
-    let currentAction: SelectedAction | null = null;
-    selectedAction.subscribe(value => {
-        currentAction = value;
-    });
-
     // Helper to check if an action is currently selected
     function isSelected(action: SelectedAction): boolean {
-        if (!currentAction) return false;
-        return JSON.stringify(currentAction) === JSON.stringify(action);
+        // Use $selectedAction directly instead of currentAction
+        if (!$selectedAction) return false;
+        // Make sure the action passed in is not null/undefined if comparing strings
+        // Though in your template usage, it's always a defined object.
+        return JSON.stringify($selectedAction) === JSON.stringify(action);
     }
 
     // Helper function to format growth progress
@@ -292,241 +289,105 @@
         if (progress === undefined) return '';
         return `${(progress * 100).toFixed(0)}% Grown`;
     }
+
+    
 </script>
 
-<!-- Use $uiMode store subscription in the template -->
-<div class="ui-panel">
-    <h3>Toolbox</h3>
-
-    <button on:click={toggleUIMode} class="mode-toggle">
-        {$uiMode === 'view' ? 'Switch to Edit Mode' : 'Switch to View Mode'}
-    </button>
-
-    {#if $uiMode === 'edit'}
-        <h4>Plants:</h4>
-        <div class="item-list">
-            {#each availablePlants as plant}
-                {@const quantity = $inventory.get(plant.id) || 0}
-                <div
-                    class="item"
-                    class:out-of-stock={quantity <= 0}
-                    role="button" tabindex="0"
-                    aria-label={`Pick up ${plant.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
-                    aria-disabled={quantity <= 0}
-                    on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
-                    style="touch-action: none;"
-                >{plant.name} ({quantity})</div>
-            {/each}
-        </div>
-        <h4>Decor:</h4>
-        <div class="item-list">
-            {#each availableDecor as decor}
-                {@const quantity = $inventory.get(decor.id) || 0}
-                <div
-                    class="item"
-                    class:out-of-stock={quantity <= 0}
-                    role="button" tabindex="0"
-                    aria-label={`Pick up ${decor.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
-                    aria-disabled={quantity <= 0}
-                    on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
-                    style="touch-action: none;"
-                >{decor.name} ({quantity})</div>
-            {/each}
-        </div>
-
-        <!-- NEW: Widget Management Section (Edit Mode Only) -->
-        <h4>Widgets:</h4>
-        <div class="widget-controls">
-            <button on:click={() => handleAddWidget('ClockDateWidget')}>
-                Add Clock and Date Widget
-            </button>
-            <!-- Add buttons for other widget types here -->
-            <!-- <button on:click={() => handleAddWidget('WeatherWidget')}>Add Weather</button> -->
-            <button on:click={handleRemoveAllWidgets} style="background-color:#f8d0d0; border-color:#e0a0a0;">
-                Remove All Widgets
-            </button>
-        </div>
-        <!-- End Widget Management Section -->
-
-    {/if} <!-- End Edit Mode Item Selection -->
-
-    <h4>Tools:</h4>
-    <button on:click={() => selectTool('water')} class:selected={isSelected({ type: 'tool', toolType: 'water' })}>
-        Watering Can {@html isSelected({ type: 'tool', toolType: 'water' }) ? ' (Selected)' : ''}
-    </button>
-    {#if $uiMode === 'edit'}
-        <button on:click={() => selectTool('remove')} class:selected={isSelected({ type: 'tool', toolType: 'remove' })}>
-            Shovel {@html isSelected({ type: 'tool', toolType: 'remove' }) ? ' (Selected)' : ''}
+<div>
+    <!-- Right Bottom Corner Buttons: Watering and uiMode Changer -->
+    <div class="absolute bottom-2 right-4 flex items-end gap-2">
+        <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
+        data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+        data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105 data-[visible=false]:translate-y-24
+        rounded-full size-16 text-4xl flex items-center justify-center" on:click={() => selectTool('water')}
+            data-selected={isSelected({ type: 'tool', toolType: 'water' })} data-visible={$uiMode==='view'}>
+            <span class="material-symbols-outlined" style="font-size: 2rem;">
+                water_drop
+            </span>
         </button>
-    {/if}
 
-    {#if $uiMode === 'edit' && $heldItem}
-        <div class="info-section drag-info">
-            <h4>Dragging: {$heldItem.typeId}</h4>
-            <p>Move to grid & release to place.</p>
-            <p>Press Q/E or scroll to rotate.</p>
-        </div>
-    {/if}
+        <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
+        data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75
+        data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
+        rounded-full size-8 text-4xl flex items-center justify-center" data-selected={$uiMode==='edit'} on:click={toggleUIMode}>
+            <span class="material-symbols-outlined"style="font-size: 1.5rem;">
+                settings
+            </span>
+        </button>
+    </div>
 
-    {#if $uiMode === 'edit' && $selectedObjectInfo && !$heldItem && !currentAction}
-        {@const iconKey = getIconKey($selectedObjectInfo)}
-        {#if iconKey}
-            <div class="info-section selection-info">
-                <h4>Selection:</h4>
-
-                {#key iconKey}
-                    <div class="icon-wrapper" title={`Key: ${iconKey}`}>
+    <div class="absolute left-1/2 -translate-x-1/2 bottom-2 flex
+    bg-white rounded-lg p-4
+    transition duration-150 data-[visible=false]:translate-y-28" data-visible={$uiMode==='edit'}>
+        <!-- Items List -->
+        <div class="flex gap-4 mr-8">
+            <!-- Items List -->
+            {#each availablePlants as plant}
+                <!-- Item -->
+                {@const quantity = $inventory.get(plant.id) || 0}
+                <div class="bg-darkerwhite rounded-lg relative">
+                    <div class="data-[instock=false]:saturate-0" data-instock={quantity>0}
+                        role="button" tabindex="0"
+                        aria-label={`Pick up ${plant.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                        aria-disabled={quantity <= 0}
+                        on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
+                        style="touch-action: none;">
                         <ObjectIconRenderer
-                            name={$selectedObjectInfo.typeId}
-                            objectType={$selectedObjectInfo.objectType}
-                            growth={$selectedObjectInfo.growthProgress}
-                            size={48}
-                            rotationY={$selectedObjectInfo.rotationY}
+                            name={plant.id}
+                            objectType={'plant'}
+                            size={64}
                         />
                     </div>
-                {/key}
-
-                <p><strong>{$selectedObjectInfo.name}</strong> ({$selectedObjectInfo.objectType})</p>
-                <p>Status: {$selectedObjectInfo.status}</p>
-                {#if $selectedObjectInfo.objectType === 'plant'}
-                    <p>{formatGrowth($selectedObjectInfo.growthProgress)}</p>
-                {/if}
-                <p style="font-size: 0.7em; color: #666;">@ [{$selectedObjectInfo.gridPos.row}, {$selectedObjectInfo.gridPos.col}]</p>
-            </div>
-        {/if}
-    {/if}
+                    <div class="absolute -bottom-2 -right-2 bg-brighterblack rounded-lg px-2 flex justify-center items-center">
+                        <p class="text-white">{quantity}</p>
+                    </div>
+                </div>
+            {/each}
+            {#each availableDecor as decor}
+                <!-- Item -->
+                {@const quantity = $inventory.get(decor.id) || 0}
+                <div class="bg-darkerwhite rounded-lg relative">
+                    <div class="data-[instock=false]:saturate-0" data-instock={quantity>0}
+                        role="button" tabindex="0"
+                        aria-label={`Pick up ${decor.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                        aria-disabled={quantity <= 0}
+                        on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
+                        style="touch-action: none;">
+                        <ObjectIconRenderer
+                            name={decor.id}
+                            objectType={'decor'}
+                            size={64}
+                        />
+                    </div>
+                    <div class="absolute -bottom-2 -right-2 bg-brighterblack rounded-lg px-2 flex justify-center items-center">
+                        <p class="text-white">{quantity}</p>
+                    </div>
+                </div>
+            {/each}
+        </div>
+        <!-- Instruments -->
+        <div class="flex gap-2">
+            <!-- Water Tool -->
+            <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
+            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+            data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
+            rounded-full size-16 text-4xl flex items-center justify-center" on:click={() => selectTool('water')}
+                data-selected={isSelected({ type: 'tool', toolType: 'water' })}>
+                <span class="material-symbols-outlined" style="font-size: 2rem;">
+                    water_drop
+                </span>
+            </button>
+            <!-- Remove Tool -->
+            <button class="bg-brighterblack text-white data-[selected=true]:bg-red data-[selected=true]:text-brighterblack
+            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+            data-[selected=true]:hover:bg-darkerred hover:bg-brightblack hover:scale-105
+            rounded-full size-16 text-4xl flex items-center justify-center" on:click={() => selectTool('remove')}
+                data-selected={isSelected({ type: 'tool', toolType: 'remove' })}>
+                <span class="material-symbols-outlined" style="font-size: 2rem;">
+                    delete
+                </span>
+            </button>
+        </div>
+            
+    </div>
 </div>
-
-<style>
-    .icon-wrapper {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        width: 60px; /* Adjust as needed */
-    }
-
-    .ui-panel {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        background-color: rgba(255, 255, 255, 0.85); /* Slightly less transparent */
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid #ccc;
-        z-index: 10;
-        font-family: sans-serif;
-        width: 220px; /* Give it a fixed width? */
-        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-    }
-    button {
-        display: block;
-        width: 100%; /* Make buttons fill width */
-        box-sizing: border-box; /* Include padding/border in width */
-        margin: 8px 0; /* Increased margin */
-        padding: 10px 12px; /* Slightly bigger padding */
-        cursor: pointer;
-        border: 1px solid #aaa;
-        border-radius: 4px;
-        background-color: #eee;
-        text-align: left; /* Align text left */
-        font-size: 0.9em;
-    }
-    button:hover {
-        background-color: #ddd;
-    }
-    button.selected {
-        background-color: #aaddaa;
-        border-color: #585;
-        font-weight: bold;
-    }
-    h3, h4 {
-        margin-top: 10px; /* Add margin above headers */
-        margin-bottom: 8px; /* Increased margin below headers */
-        border-bottom: 1px solid #eee; /* Separator */
-        padding-bottom: 4px;
-    }
-    h3:first-child {
-        margin-top: 0; /* No top margin for the very first header */
-    }
-    p {
-        font-size: 0.9em; /* Slightly larger base text */
-        color: #333; /* Darker text */
-        margin: 4px 0;
-    }
-
-    .item-list {
-        display: flex;
-        flex-wrap: wrap; /* Allow items to wrap */
-        gap: 8px; /* Slightly reduced gap */
-        margin-bottom: 15px; /* Increased margin */
-    }
-
-    .item {
-        padding: 6px 10px; /* Adjusted padding */
-        border: 1px solid #888;
-        border-radius: 5px;
-        background-color: #e0e0e0; /* Lighter item background */
-        cursor: grab;
-        user-select: none;
-        -webkit-user-select: none;
-        -moz-user-select: none;
-        -ms-user-select: none;
-        font-size: 0.85em;
-        transition: background-color 0.2s ease; /* Smooth hover */
-    }
-    .item:hover {
-        background-color: #ccc;
-    }
-    .info-section {
-        margin-top: 15px;
-        padding-top: 10px;
-        border-top: 1px dashed #ccc; /* Separator */
-    }
-    .info-section h4 {
-        margin-top: 0;
-        margin-bottom: 5px;
-        border-bottom: none; /* Remove double border */
-        font-size: 0.95em;
-    }
-    .info-section p {
-        font-size: 0.85em;
-        margin: 2px 0;
-    }
-    .item.out-of-stock {
-        color: #999;
-        background-color: #f0f0f0;
-        cursor: not-allowed;
-        pointer-events: none; /* Disable pointer events entirely */
-        opacity: 0.6;
-    }
-    .selection-info strong {
-        color: #0056b3; /* Highlight name */
-    }
-
-    /* Style for the mode toggle button */
-    .mode-toggle {
-        background-color: #d0e0f0; /* Light blue background */
-        border-color: #a0c0e0;
-        margin-bottom: 15px; /* Add space below */
-        text-align: center; /* Center text */
-        font-weight: bold;
-    }
-    .mode-toggle:hover {
-        background-color: #b0d0f0;
-    }
-
-    /* NEW: Styles for widget controls */
-    .widget-controls {
-        margin-bottom: 15px; /* Add space below */
-    }
-    .widget-controls button {
-        background-color: #e0d0f0; /* Light purple background */
-        border-color: #c0a0e0;
-        font-size: 0.85em; /* Slightly smaller */
-        padding: 8px 10px;
-    }
-     .widget-controls button:hover {
-        background-color: #d0b0e8;
-    }
-    /* --- End Widget Control Styles --- */
-</style>

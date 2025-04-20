@@ -298,55 +298,18 @@
 
 <div bind:this={container} class="icon-container" style:width="{size}px" style:height="{size}px">
 	{#if isLoading}
-		<div class="status loading">Loading...</div>
+		<div class="w-full h-full text-brighterblack flex justify-center items-center">
+            <span class="material-symbols-outlined" style="font-size: 2rem;">
+                hourglass_top
+            </span>
+        </div>
 	{:else if error}
-		<div class="status error" title={error}>Error</div>
+    <div class="w-full h-full text-brighterblack flex justify-center items-center">
+        <span class="material-symbols-outlined" style="font-size: 2rem;">
+            error
+        </span>
+    </div>
 	{/if}
     <!-- Canvas will be appended here by Three.js if not already present -->
     <canvas style:width="{size}px" style:height="{size}px"></canvas>
 </div>
-
-<style>
-	.icon-container {
-		display: inline-block; /* Or block, depending on layout needs */
-		position: relative;
-		overflow: hidden;
-        border: 1px solid #ccc; /* Optional: for visualization */
-        background-color: rgba(100, 100, 150, 0.2); /* Optional: faint bg */
-	}
-
-    canvas {
-        display: block; /* Remove extra space below canvas */
-        width: 100%;
-        height: 100%;
-    }
-
-	.status {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
-		height: 100%;
-		display: flex;
-		justify-content: center;
-		align-items: center;
-		font-size: calc(var(--icon-size, 64px) * 0.2); /* Adjust font size relative to container */
-        line-height: 1;
-		background-color: rgba(0, 0, 0, 0.5);
-		color: white;
-		z-index: 1; /* Ensure status is above canvas */
-        text-align: center;
-        padding: 2px;
-        box-sizing: border-box;
-	}
-
-    .status.loading {
-        /* Add spinner styles if desired */
-        background-color: rgba(0, 0, 0, 0.7);
-    }
-
-	.status.error {
-		background-color: rgba(200, 0, 0, 0.7);
-        cursor: help;
-	}
-</style>
