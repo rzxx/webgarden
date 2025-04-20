@@ -152,6 +152,10 @@ let lastPreviewGridPos: { row: number; col: number } | null = null;
 let currentPreviewModel: THREE.Group | null = null; // Holds the cloned GLTF for preview
 let previewMaterialValid: THREE.MeshBasicMaterial;
 let previewMaterialInvalid: THREE.MeshBasicMaterial;
+let previewMaterialOffGrid: THREE.MeshBasicMaterial;
+const offGridProjectionPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // Plane at Y=0, normal pointing up
+const offGridRay = new THREE.Ray(); // Reusable Ray for off-grid intersection
+const offGridIntersectPoint = new THREE.Vector3(); // Reusable Vector3
 const THROTTLE_DRAGOVER_MS = 75;
 // --- End Bounding Boxes ---
 
@@ -1326,66 +1330,48 @@ function updateDayNightCycle(currentTime: Date) {
  * Updates the position, size, and color of the preview box, considering rotation.
  */
 function updatePreviewBox(row: number, col: number, objectType: 'plant' | 'decor', typeId: string, rotationY: number) {
-	if (!previewGroup) {
-		hidePreviewBox(); // Hide if something is wrong
-		return;
-	}
-
-	// Get config based on objectType
-    const config = objectType === 'plant'
-        ? plantConfigs[typeId]
-        : decorConfigs[typeId];
-
-    // Ensure config exists
-    if (!config) {
-        console.warn(`Preview: Config not found for ${objectType} ${typeId}`);
+    if (!previewGroup || !currentHeldItem) { // Check currentHeldItem too
         hidePreviewBox();
         return;
     }
+
+    const config = objectType === 'plant' ? plantConfigs[typeId] : decorConfigs[typeId];
+    if (!config) { hidePreviewBox(); return; }
     const baseSize = config.size;
-	// --- Calculate Effective Size Based on Rotation ---
+
     let effectiveRows = baseSize.rows;
     let effectiveCols = baseSize.cols;
     const isRotated90 = Math.abs(rotationY - Math.PI / 2) < 0.01 || Math.abs(rotationY + Math.PI / 2) < 0.01;
+    if (isRotated90) { [effectiveRows, effectiveCols] = [effectiveCols, effectiveRows]; }
 
-    if (isRotated90) { // Check if rotated +/-90 degrees
-        effectiveRows = baseSize.cols; // Swap dimensions
-        effectiveCols = baseSize.rows;
-    }
-    // --- End Calculate Effective Size ---
     const isValid = isAreaFree(row, col, effectiveRows, effectiveCols);
     const material = isValid ? validPlacementMaterial : invalidPlacementMaterial;
 
-	let meshIndex = 0;
-	for (let rOffset = 0; rOffset < effectiveRows; rOffset++) {
-		for (let cOffset = 0; cOffset < effectiveCols; cOffset++) {
-			const targetRow = row + rOffset;
-			const targetCol = col + cOffset;
+    let meshIndex = 0;
+    for (let rOffset = 0; rOffset < effectiveRows; rOffset++) {
+        for (let cOffset = 0; cOffset < effectiveCols; cOffset++) {
+            const targetRow = row + rOffset;
+            const targetCol = col + cOffset;
 
-			// Check if the current cell is within bounds *and* we have enough preview meshes in the pool
-			if (meshIndex < previewMeshes.length && targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
-				const mesh = previewMeshes[meshIndex];
-				const worldPos = gridCellCenterToWorld(targetRow, targetCol); // Center of *this specific cell*
+            if (meshIndex < previewMeshes.length && targetRow >= 0 && targetRow < GRID_DIVISIONS && targetCol >= 0 && targetCol < GRID_DIVISIONS) {
+                const mesh = previewMeshes[meshIndex];
+                const worldPos = gridCellCenterToWorld(targetRow, targetCol);
 
-				mesh.position.x = worldPos.x;
-				mesh.position.z = worldPos.z;
-				mesh.material = material;
-				mesh.visible = true; // Make this specific plane visible
-				meshIndex++;
-			} else if (meshIndex >= previewMeshes.length) {
-				console.warn("Need more meshes in preview pool!");
-			}
-			// If cell is out of bounds, don't draw a preview mesh for it
-		}
-	}
-
-	// Hide any remaining unused meshes in the pool
-	for (let i = meshIndex; i < previewMeshes.length; i++) {
-		previewMeshes[i].visible = false;
-	}
-
-	previewGroup.visible = true; // Make the whole group visible
-	lastPreviewGridPos = { row, col }; // Store the current position
+                mesh.position.x = worldPos.x;
+                mesh.position.z = worldPos.z;
+                mesh.material = material; // Set green/red material
+                mesh.visible = true;
+                meshIndex++;
+            } else if (meshIndex >= previewMeshes.length) {
+                console.warn("Need more meshes in plane preview pool!");
+            }
+        }
+    }
+    // Hide unused plane meshes
+    for (let i = meshIndex; i < previewMeshes.length; i++) {
+        previewMeshes[i].visible = false;
+    }
+    previewGroup.visible = true; // Make group visible
 }
 
 /**
@@ -1395,9 +1381,6 @@ function hidePreviewBox() {
 	if (previewGroup) {
 		previewGroup.visible = false;
 	}
-	// Optionally hide individual meshes too for robustness, though group visibility is enough
-	// previewMeshes.forEach(mesh => mesh.visible = false);
-	lastPreviewGridPos = null; // Reset last position
 }
 
 /** Clears the current 3D preview model from the scene and disposes it */
@@ -1462,20 +1445,25 @@ function setupPreviewModel(item: HeldItemInfo) {
     currentPreviewModel.visible = false; // Start invisible until positioned
 
     // Apply initial invalid material (will be updated on first move)
-    setPreviewModelMaterial(currentPreviewModel, false);
+    setPreviewModelMaterial(currentPreviewModel, 'off-grid');
 
     scene.add(currentPreviewModel);
     console.log(`Preview: Cloned ${modelPath} for preview.`);
 }
 
 /** Applies the valid or invalid material to all meshes in the preview model */
-function setPreviewModelMaterial(modelInstance: THREE.Group | null, isValid: boolean) {
+function setPreviewModelMaterial(modelInstance: THREE.Group | null, status: 'valid' | 'invalid' | 'off-grid') {
     if (!modelInstance) return;
-    const targetMaterial = isValid ? previewMaterialValid : previewMaterialInvalid;
+    let targetMaterial: THREE.Material;
+    switch(status) {
+        case 'valid': targetMaterial = previewMaterialValid; break;
+        case 'invalid': targetMaterial = previewMaterialInvalid; break;
+        case 'off-grid': targetMaterial = previewMaterialOffGrid; break; // Use the off-grid color
+        default: targetMaterial = previewMaterialInvalid; // Default to invalid
+    }
     modelInstance.traverse((child) => {
         if (child instanceof THREE.Mesh) {
             child.material = targetMaterial;
-            // Ensure shadows are off for the preview to avoid artifacts/cost
             child.castShadow = false;
             child.receiveShadow = false;
         }
@@ -1492,12 +1480,12 @@ function hidePreviewModel() {
 
 /** Updates the transform and color of the 3D preview model */
 function updatePreviewModelTransformAndColor(
-    gridCoords: { row: number; col: number } | null,
-    isValid: boolean,
+    positionData: { gridCoords: { row: number; col: number } } | { worldPos: THREE.Vector3 },
+    status: 'valid' | 'invalid' | 'off-grid',
     rotationY: number
 ) {
-    if (!gridCoords || !currentPreviewModel || !currentHeldItem) {
-        hidePreviewModel();
+    if (!currentPreviewModel || !currentHeldItem) {
+        hidePreviewModel(); // Hides the 3D model specifically
         return;
     }
 
@@ -1522,56 +1510,58 @@ function updatePreviewModelTransformAndColor(
     }
 
     if (!config || !modelPath) {
-         console.error("Preview update: Config or modelPath missing.");
-         hidePreviewModel();
-         return;
+        console.error("Preview update: Config or modelPath missing.");
+        hidePreviewModel();
+        return;
     }
     const cachedGltfData = gltfCache[modelPath];
-     if (!cachedGltfData) {
-         console.error(`Preview update: Cached data missing for ${modelPath}`);
-         hidePreviewModel();
-         return;
-     }
-
-    // --- Calculate Transform (borrowed from updatePlantVisuals/updateDecorVisuals) ---
-    const itemSize = config.size; // Size from the config
-
-    // Calculate effective size based on *preview* rotation
-    let effectiveRows = itemSize.rows;
-    let effectiveCols = itemSize.cols;
-    const isRotated90 = Math.abs(rotationY - Math.PI / 2) < 0.01 || Math.abs(rotationY + Math.PI / 2) < 0.01;
-    if (isRotated90) {
-        [effectiveRows, effectiveCols] = [effectiveCols, effectiveRows]; // Swap
+    if (!cachedGltfData) {
+        console.error(`Preview update: Cached data missing for ${modelPath}`);
+        hidePreviewModel();
+        return;
     }
 
-    // Use base scale multiplier defined in config
+    const itemSize = config.size; // Size from the config
     const baseOccupancyWorldSize = Math.max(itemSize.rows, itemSize.cols) * CELL_SIZE;
     const targetVisualSize = baseScaleMultiplier * baseOccupancyWorldSize;
-
-    const modelNormalizationScale = cachedGltfData.baseScale; // Scale to make model unit size
+    const modelNormalizationScale = cachedGltfData.baseScale;
     const finalScale = modelNormalizationScale * targetVisualSize;
 
-    // Center based on the *original* item size (not rotated effective size)
-    const worldPosCenter = gridAreaCenterToWorld(gridCoords.row, gridCoords.col, itemSize.rows, itemSize.cols);
+    currentPreviewModel.scale.set(finalScale, finalScale, finalScale);
+    currentPreviewModel.rotation.set(0, rotationY, 0);
 
+    // --- Calculate Position ---
+    let targetWorldPos: THREE.Vector3;
+    const offsetY = cachedGltfData.centerOffsetY * finalScale + 0.02; // Base offset + slight lift
     const offsetX = cachedGltfData.centerOffsetX * finalScale;
-    const offsetY = cachedGltfData.centerOffsetY * finalScale; // Place base at y=0
     const offsetZ = cachedGltfData.centerOffsetZ * finalScale;
 
-    // Apply transform
-    currentPreviewModel.position.set(
-        worldPosCenter.x + offsetX,
-        worldPosCenter.y + offsetY + 0.02, // Lift slightly above ground
-        worldPosCenter.z + offsetZ
-    );
-    currentPreviewModel.scale.set(finalScale, finalScale, finalScale);
-	currentPreviewModel.rotation.set(0, rotationY, 0);
+    if ('gridCoords' in positionData) {
+        // Position based on grid area center
+        const { row, col } = positionData.gridCoords;
+        targetWorldPos = gridAreaCenterToWorld(row, col, itemSize.rows, itemSize.cols);
+        // Apply centering offsets calculated relative to grid area center
+        currentPreviewModel.position.set(
+            targetWorldPos.x + offsetX,
+            targetWorldPos.y + offsetY,
+            targetWorldPos.z + offsetZ
+        );
+         lastPreviewGridPos = positionData.gridCoords; // Store grid position only when on grid
 
-    // Update material color
-    setPreviewModelMaterial(currentPreviewModel, isValid);
+    } else { // 'worldPos' in positionData
+        // Position directly at the raycast hit point (already world coords)
+        targetWorldPos = positionData.worldPos;
+        // Apply centering offsets relative to the hit point
+        currentPreviewModel.position.set(
+            targetWorldPos.x + offsetX,
+            targetWorldPos.y + offsetY, // We assume the hit point y is ~0
+            targetWorldPos.z + offsetZ
+        );
+        // Don't update lastPreviewGridPos when off-grid
+    }
 
-    // Store last grid position
-    lastPreviewGridPos = gridCoords;
+    // Update material color based on status
+    setPreviewModelMaterial(currentPreviewModel, status);
 }
 
 // --- Function to Update Plant Growth ---
@@ -2444,9 +2434,9 @@ function handleCanvasPointerDown(event: PointerEvent) {
 // --- NEW: Pointer Move Handler (for dragging items) ---
 
 const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
-    if (!isPointerDragging || !currentHeldItem || !container || !camera || !ground) {
-        hidePreviewModel();
-        // console.log("throttledPointerMoveLogic skipped: not dragging or missing refs");
+    if (!isPointerDragging || !currentHeldItem || !container || !camera) {
+        hidePreviewBox();   // Hide planes
+        hidePreviewModel(); // Hide 3D model
         return;
     }
 
@@ -2455,13 +2445,11 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
     const pointerX = event.clientX - rect.left;
     const pointerY = event.clientY - rect.top;
 
-    // Check if pointer is within canvas bounds (optional, but can prevent unnecessary raycasts)
+    // Check if pointer is within canvas bounds
     if (pointerX < 0 || pointerX > rect.width || pointerY < 0 || pointerY > rect.height) {
-         // Pointer is outside the canvas, hide preview
-         hidePreviewBox();
-         lastPreviewGridPos = null; // Reset last position
-         // requestRender(); // Hide preview - render loop should be active
-         return;
+        hidePreviewBox();
+        hidePreviewModel();
+        return;
     }
 
 
@@ -2486,6 +2474,7 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
                 : decorConfigs[currentHeldItem.typeId];
 
             if (!config) { // Config missing safety check
+                hidePreviewBox();
                 hidePreviewModel();
                 return;
             }
@@ -2498,25 +2487,30 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
             }
 
             const isValid = isAreaFree(gridCoords.row, gridCoords.col, effectiveRows, effectiveCols);
+            const status = isValid ? 'valid' : 'invalid';
 
-            if (!lastPreviewGridPos || lastPreviewGridPos.row !== gridCoords.row || lastPreviewGridPos.col !== gridCoords.col) {
-                // console.log("Pointer move update preview:", gridCoords);
-                // *** PASS CURRENT ROTATION ***
-                updatePreviewModelTransformAndColor(gridCoords, isValid, previewRotationY);
-                 // Render loop should be running, no explicit request needed here normally
-                 // if (!isRenderLoopActive) requestRender();
-            }
+            updatePreviewBox(gridCoords.row, gridCoords.col, currentHeldItem.objectType, currentHeldItem.typeId, previewRotationY);
+            updatePreviewModelTransformAndColor({ gridCoords: gridCoords }, status, previewRotationY);
         } else {
-            // Pointer is over the canvas but outside the defined grid area
-            // console.log("Pointer move hide preview: outside grid");
-            hidePreviewBox();
-            // if (!isRenderLoopActive) requestRender();
+            hidePreviewBox(); // Hide planes
+            // Position 3D model at the hit point on the ground mesh, mark as off-grid/invalid
+            updatePreviewModelTransformAndColor({ worldPos: intersectPoint }, 'off-grid', previewRotationY);
         }
     } else {
-        // Pointer is not over the ground plane (e.g., maybe over UI elements temporarily if they overlay)
-        // console.log("Pointer move hide preview: missed ground");
-        hidePreviewBox();
-        // if (!isRenderLoopActive) requestRender();
+        // --- OFF GRID: Raycast against the invisible projection plane ---
+        offGridRay.copy(raycaster.ray); // Use the same ray
+        if (offGridRay.intersectPlane(offGridProjectionPlane, offGridIntersectPoint)) {
+            // Hit the invisible plane
+            hidePreviewBox(); // Hide planes
+            // Update ONLY the 3D model, positioned at the intersection point
+            updatePreviewModelTransformAndColor({ worldPos: offGridIntersectPoint }, 'off-grid', previewRotationY);
+             lastPreviewGridPos = null; // Explicitly clear grid pos when off grid
+
+        } else {
+            // Missed both ground and projection plane (cursor likely outside canvas or over UI)
+            hidePreviewBox();
+            hidePreviewModel();
+        }
     }
 }, THROTTLE_DRAGOVER_MS);
 
@@ -2685,12 +2679,14 @@ function rotatePreview(direction: 1 | -1) {
             [effectiveRows, effectiveCols] = [effectiveCols, effectiveRows];
         }
         const isValid = isAreaFree(lastPreviewGridPos.row, lastPreviewGridPos.col, effectiveRows, effectiveCols);
+        const status = isValid ? 'valid' : 'invalid';
 
-        // Update transform (including new rotation) and color
-        updatePreviewModelTransformAndColor(lastPreviewGridPos, isValid, previewRotationY);
+        updatePreviewBox(lastPreviewGridPos.row, lastPreviewGridPos.col, currentHeldItem.objectType, currentHeldItem.typeId, previewRotationY);
+        updatePreviewModelTransformAndColor({ gridCoords: lastPreviewGridPos }, status, previewRotationY);
         } else {
             // If we don't have a last position, just update rotation; it will be positioned on next move
             currentPreviewModel.rotation.y = previewRotationY;
+            setPreviewModelMaterial(currentPreviewModel, 'off-grid');
         }
 }
 
@@ -3240,30 +3236,22 @@ onMount(() => {
 	// --- Preview Bounding Box Setup (Keep as is) ---
 	validPlacementMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, opacity: 0.5, transparent: true, side: THREE.DoubleSide });
 	invalidPlacementMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, opacity: 0.5, transparent: true, side: THREE.DoubleSide });
+    previewMaterialValid = new THREE.MeshBasicMaterial({ color: 0x33ff33, opacity: 0.75, transparent: true }); // Slightly brighter green
+    previewMaterialInvalid = new THREE.MeshBasicMaterial({ color: 0xff3333, opacity: 0.75, transparent: true }); // Slightly brighter red
+    // Optional: A neutral/distinct color for when off-grid
+    previewMaterialOffGrid = new THREE.MeshBasicMaterial({ color: 0xaaaaaa, opacity: 0.6, transparent: true });
 	previewGroup = new THREE.Group();
-	previewGroup.visible = false;
-	scene.add(previewGroup);
-	const previewPlaneGeom = new THREE.PlaneGeometry(CELL_SIZE * 0.95, CELL_SIZE * 0.95);
-	previewPlaneGeom.rotateX(-Math.PI / 2);
-	for (let i = 0; i < MAX_PREVIEW_CELLS; i++) {
-		const plane = new THREE.Mesh(previewPlaneGeom, validPlacementMaterial);
-		plane.visible = false;
-		plane.position.y = 0.02;
-		previewMeshes.push(plane);
-		previewGroup.add(plane);
-	}
-    previewMaterialValid = new THREE.MeshBasicMaterial({
-        color: 0x00ff00, // Green
-        opacity: 0.7,
-        transparent: true,
-        // side: THREE.DoubleSide // Usually not needed for solid models
-    });
-    previewMaterialInvalid = new THREE.MeshBasicMaterial({
-        color: 0xff0000, // Red
-        opacity: 0.7,
-        transparent: true,
-        // side: THREE.DoubleSide
-    });
+    previewGroup.visible = false;
+    scene.add(previewGroup);
+    const previewPlaneGeom = new THREE.PlaneGeometry(CELL_SIZE * 0.95, CELL_SIZE * 0.95);
+    previewPlaneGeom.rotateX(-Math.PI / 2);
+    for (let i = 0; i < MAX_PREVIEW_CELLS; i++) {
+        const plane = new THREE.Mesh(previewPlaneGeom, validPlacementMaterial);
+        plane.visible = false;
+        plane.position.y = 0.01;
+        previewMeshes.push(plane);
+        previewGroup.add(plane);
+    }
     
     // Post-Processing
     composer = new EffectComposer(renderer);
