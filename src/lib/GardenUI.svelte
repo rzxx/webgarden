@@ -156,11 +156,11 @@
 
         let foundSpot = false;
         let targetRow = 1;
-        let targetCol = 8;
+        let targetCol = 1;
 
         // Iterate through possible top-left starting positions (r, c)
         for (let r = 1; r <= GRID_ROWS; r++) {
-            for (let c = 10; c <= GRID_COLS; c++) {
+            for (let c = 1; c <= GRID_COLS; c++) {
 
                 // --- 1. Check if the widget FITS within grid boundaries ---
                 const fitsHorizontally = (c + newWidgetColSpan - 1 <= GRID_COLS);
@@ -283,6 +283,7 @@
         // Though in your template usage, it's always a defined object.
         return JSON.stringify($selectedAction) === JSON.stringify(action);
     }
+    $: isSelectionInfoVisible = $uiMode === 'edit' && $selectedObjectInfo && !$heldItem && !$selectedAction;
 
     // Helper function to format growth progress
     function formatGrowth(progress: number | undefined): string {
@@ -325,7 +326,7 @@
             {#each availablePlants as plant}
                 <!-- Item -->
                 {@const quantity = $inventory.get(plant.id) || 0}
-                <div class="bg-darkerwhite rounded-lg relative">
+                <div class="bg-darkerwhite rounded-lg relative hover:scale-105 hover:brightness-95 transition duration-75">
                     <div class="data-[instock=false]:saturate-0" data-instock={quantity>0}
                         role="button" tabindex="0"
                         aria-label={`Pick up ${plant.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
@@ -346,7 +347,7 @@
             {#each availableDecor as decor}
                 <!-- Item -->
                 {@const quantity = $inventory.get(decor.id) || 0}
-                <div class="bg-darkerwhite rounded-lg relative">
+                <div class="bg-darkerwhite rounded-lg relative hover:scale-105 hover:brightness-95 transition duration-75">
                     <div class="data-[instock=false]:saturate-0" data-instock={quantity>0}
                         role="button" tabindex="0"
                         aria-label={`Pick up ${decor.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
@@ -388,6 +389,63 @@
                 </span>
             </button>
         </div>
-            
+    </div>
+    <!-- Widgets -->
+    <div class="absolute right-14 bottom-2 flex flex-col
+    bg-brighterblack rounded-lg px-4 py-2 gap-4
+    transition duration-150 data-[visible=false]:translate-y-40" data-visible={$uiMode==='edit'}>
+        <p class='text-white mx-auto font-bold text-lg'>Widgets</p>
+        <button class="rounded-lg bg-white hover:bg-darkerwhite hover:scale-105 transition duration-75 text-black font-semibold px-3 py-1 flex justify-between items-center gap-4" on:click={() => handleAddWidget('ClockDateWidget')}>
+            <p>Add Clock and Date Widget</p>
+            <span class="material-symbols-outlined -mb-1">
+                add
+            </span>
+        </button>
+        <button class="rounded-lg bg-red hover:bg-darkerred hover:scale-105 transition duration-75 text-black font-semibold px-3 py-1 flex justify-between items-center" on:click={handleRemoveAllWidgets}>
+            <p>Remove All Widgets</p>
+            <span class="material-symbols-outlined -mb-1">
+                close
+            </span>
+        </button>
+    </div>
+    <!-- Selected Object -->
+    <div class="absolute left-1/2 -translate-x-1/2 top-2 flex items-center gap-4
+    bg-white rounded-lg p-2
+    transition duration-150 data-[visible=false]:-translate-y-16 data-[visible=false]:scale-0" data-visible={isSelectionInfoVisible || false}>
+    {#if $selectedObjectInfo}
+        {@const iconKey = getIconKey($selectedObjectInfo)}
+        {#if iconKey}
+            <div class="text-sm">
+                <p class="font-bold">{$selectedObjectInfo.name} ({$selectedObjectInfo.objectType})</p>
+                <p>Status: {$selectedObjectInfo.status}</p>
+                {#if $selectedObjectInfo.objectType === 'plant'}
+                    <p>{formatGrowth($selectedObjectInfo.growthProgress)}</p>
+                {/if}
+            </div>
+            {#key iconKey}
+                <div class="flex flex-col items-center">
+                    <ObjectIconRenderer
+                        name={$selectedObjectInfo.typeId}
+                        objectType={$selectedObjectInfo.objectType}
+                        growth={$selectedObjectInfo.growthProgress}
+                        size={64}
+                        rotationY={$selectedObjectInfo.rotationY}
+                    />
+                </div>
+            {/key}
+        {/if}
+    {:else}
+        <div class="text-sm">
+            <p class="font-bold">No object is selected.</p>
+            <p>Status: No status</p>
+        </div>
+        <div class="flex flex-col items-center">
+            <div class="w-16 h-16 flex items-center justify-center">
+                <span class="material-symbols-outlined text-brightblack" style="font-size: 3rem;">
+                    image
+                </span>
+            </div>
+        </div>
+    {/if}
     </div>
 </div>
