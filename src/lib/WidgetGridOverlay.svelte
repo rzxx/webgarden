@@ -79,6 +79,14 @@
     // --- Grid Calculation ---
     function updateCellDimensions() {
 		if (!gridOverlayElement) return;
+
+        if (gridOverlayElement.offsetParent === null) {
+            console.warn('WidgetGridOverlay is hidden, skipping dimension calculation.');
+            cellPlusGapWidth = 1; // Prevent potential division by zero later
+            cellPlusGapHeight = 1;
+            return;
+        }
+        
 		const overlayRect = gridOverlayElement.getBoundingClientRect();
 		if (overlayRect.width <= 0 || overlayRect.height <= 0) {
 			console.warn('Overlay zero dimensions.'); cellPlusGapWidth = 1; cellPlusGapHeight = 1; return;
