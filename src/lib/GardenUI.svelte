@@ -318,7 +318,7 @@
     </div>
 
     <div class="absolute left-1/2 -translate-x-1/2 bottom-2 flex
-    bg-white rounded-lg p-2
+    bg-white rounded-lg p-2 xl:p-4
     transition duration-150 data-[visible=false]:translate-y-28" data-visible={$uiMode==='edit'}>
         <!-- Items List -->
         <div class="xl:hidden flex gap-2 mr-4">
