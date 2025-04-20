@@ -9,6 +9,7 @@
         GRID_ROWS,
         GRID_COLS,
     } from './stores';
+    import { plantConfigs, decorConfigs } from './objectConfigs';
     // --- Import default sizes/settings from registry ---
     import { defaultWidgetSettings, defaultWidgetSize } from './widgetRegistry';
     import { get } from 'svelte/store';
@@ -229,6 +230,51 @@
         console.log("All widgets removed.");
     }
 
+    // Helper function to determine the unique key for the icon renderer
+    function getIconKey(info: typeof $selectedObjectInfo): string | null {
+        if (!info) return null; // Return null if no info, key block won't render
+
+        let modelPath: string | null = null;
+        const { typeId, objectType, growthProgress, rotationY } = info;
+        const rotationKeyPart = `::rot${rotationY ?? 0}`; // Add rotation to the key
+
+        if (objectType === 'plant') {
+            const config = plantConfigs[typeId]; // Don't use default here initially
+            if (!config) {
+                console.warn(`Parent Key Calc: Plant config not found for ID "${typeId}".`);
+                // Fallback strategy? Use typeId itself or a generic key?
+                return `${typeId}-config-missing`; // Use typeId as part of the key
+            }
+            if (!config.growthStages || config.growthStages.length === 0) {
+                console.error(`Parent Key Calc: Plant config for "${typeId}" has no growthStages.`);
+                return `${typeId}-no-stages`;
+            }
+
+            const clampedGrowth = Math.max(0, Math.min(1, growthProgress ?? 1.0));
+            const sortedStages = [...config.growthStages].sort((a, b) => a.maxGrowth - b.maxGrowth);
+            const stage = sortedStages.find(s => clampedGrowth <= s.maxGrowth) ?? sortedStages[sortedStages.length - 1];
+
+            modelPath = stage?.modelPath ?? null;
+            if (!modelPath) return `${typeId}-no-model`; // Handle missing model path
+
+            // Combine typeId and modelPath for uniqueness, especially if different plants share a seed model
+            return `${typeId}::${modelPath}::${rotationKeyPart}`;
+
+        } else if (objectType === 'decor') {
+            const config = decorConfigs[typeId];
+             if (!config?.modelPath) {
+                console.warn(`Parent Key Calc: Decor config/modelPath missing for "${typeId}".`);
+                return `${typeId}-decor-missing`; // Use typeId as key
+            }
+            modelPath = config.modelPath;
+            // For decor, typeId is usually sufficient as the model doesn't change
+            // But using the modelPath is safer if configs could change
+             return `${typeId}::${modelPath}::${rotationKeyPart}`;
+        }
+
+        return 'unknown-type'; // Fallback for unexpected objectType
+    }
+
     // Reactive declaration to get the current value for styling
     let currentAction: SelectedAction | null = null;
     selectedAction.subscribe(value => {
@@ -323,18 +369,31 @@
     {/if}
 
     {#if $uiMode === 'edit' && $selectedObjectInfo && !$heldItem && !currentAction}
-        <div class="info-section selection-info">
-            <h4>Selection:</h4>
-            <div class="icon-wrapper">
-                <ObjectIconRenderer name={$selectedObjectInfo.typeId} objectType={$selectedObjectInfo.objectType} growth={$selectedObjectInfo.growthProgress} size={48} />
+        {@const iconKey = getIconKey($selectedObjectInfo)}
+        {#if iconKey}
+            <div class="info-section selection-info">
+                <h4>Selection:</h4>
+
+                {#key iconKey}
+                    <div class="icon-wrapper" title={`Key: ${iconKey}`}>
+                        <ObjectIconRenderer
+                            name={$selectedObjectInfo.typeId}
+                            objectType={$selectedObjectInfo.objectType}
+                            growth={$selectedObjectInfo.growthProgress}
+                            size={48}
+                            rotationY={$selectedObjectInfo.rotationY}
+                        />
+                    </div>
+                {/key}
+
+                <p><strong>{$selectedObjectInfo.name}</strong> ({$selectedObjectInfo.objectType})</p>
+                <p>Status: {$selectedObjectInfo.status}</p>
+                {#if $selectedObjectInfo.objectType === 'plant'}
+                    <p>{formatGrowth($selectedObjectInfo.growthProgress)}</p>
+                {/if}
+                <p style="font-size: 0.7em; color: #666;">@ [{$selectedObjectInfo.gridPos.row}, {$selectedObjectInfo.gridPos.col}]</p>
             </div>
-            <p><strong>{$selectedObjectInfo.name}</strong> ({$selectedObjectInfo.objectType})</p>
-            <p>Status: {$selectedObjectInfo.status}</p>
-            {#if $selectedObjectInfo.objectType === 'plant'}
-                <p>{formatGrowth($selectedObjectInfo.growthProgress)}</p>
-            {/if}
-            <p style="font-size: 0.7em; color: #666;">@ [{$selectedObjectInfo.gridPos.row}, {$selectedObjectInfo.gridPos.col}]</p>
-        </div>
+        {/if}
     {/if}
 </div>
 

@@ -2228,6 +2228,7 @@ function handleCanvasPointerDown(event: PointerEvent) {
                 const typeId = 'plantTypeId' in info ? info.plantTypeId : info.decorTypeId;
                 const availableList = objectType === 'plant' ? availablePlants : availableDecor;
                 const name = availableList.find(item => item.id === typeId)?.name ?? typeId;
+                const rotationY = info.rotationY;
                 let status = 'OK';
                 let growth: number | undefined = undefined;
                 // determine status/growth)
@@ -2243,8 +2244,8 @@ function handleCanvasPointerDown(event: PointerEvent) {
                     }
                 }
 
-                const displayInfo: SelectedObjectDisplayInfo = { /* ... create displayInfo ... */
-                    typeId: typeId, name: name, objectType: objectType, status: status, growthProgress: growth, gridPos: { ...info.gridPos }
+                const displayInfo: SelectedObjectDisplayInfo = {
+                    typeId: typeId, name: name, objectType: objectType, status: status, growthProgress: growth, rotationY: rotationY, gridPos: { ...info.gridPos }
                 };
                 selectedObjectInfo.set(displayInfo); // Update store
                 updateSelectionOutline(info.object3D); // Update outline immediately

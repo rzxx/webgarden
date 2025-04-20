@@ -51,6 +51,7 @@ export interface SelectedObjectDisplayInfo {
     status: string; // e.g., 'Healthy', 'Needs Water', 'OK', 'On', 'Off'
     growthProgress?: number; // Optional, for plants (0-1)
     gridPos: { row: number; col: number }; // For context/debugging
+    rotationY: number;
     // Add any other relevant info you want to display
 }
 

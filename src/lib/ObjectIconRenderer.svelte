@@ -14,6 +14,8 @@
 	export let growth: number | undefined = undefined;
 	/** Desired size (width & height) of the icon canvas in pixels */
 	export let size: number = 64; // Default size
+    /** Optional: The Y-axis rotation in radians. Defaults to 0. */
+    export let rotationY: number | undefined = undefined;
 
 	// --- Internal State ---
 	let container: HTMLDivElement;
@@ -176,8 +178,9 @@
                 box.getCenter(center);
 
                 model.position.x -= center.x;
-                model.position.y -= center.y; // Center vertically
+                model.position.y -= center.y;
                 model.position.z -= center.z;
+                model.rotation.y = rotationY ?? 0;
 
                 const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
                 if (maxDim === 0 && modelPath !== '/models/seed.glb') { // Allow seed to be tiny
