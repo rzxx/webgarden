@@ -296,7 +296,7 @@
 
 <div>
     <!-- Right Bottom Corner Buttons: Watering and uiMode Changer -->
-    <div class="absolute bottom-2 right-4 flex items-end gap-2">
+    <div class="absolute xl:bottom-2 bottom-4 xl:right-4 right-6 flex items-end gap-2">
         <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
         data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
         data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105 data-[visible=false]:translate-y-24
@@ -309,7 +309,7 @@
 
         <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
         data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75
-        data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
+        data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105 data-[selected=true]:-translate-y-16 xl:data-[selected=true]:translate-y-0
         rounded-full size-8 text-4xl flex items-center justify-center" data-selected={$uiMode==='edit'} on:click={toggleUIMode}>
             <span class="material-symbols-outlined"style="font-size: 1.5rem;">
                 settings
@@ -318,10 +318,55 @@
     </div>
 
     <div class="absolute left-1/2 -translate-x-1/2 bottom-2 flex
-    bg-white rounded-lg p-4
+    bg-white rounded-lg p-2
     transition duration-150 data-[visible=false]:translate-y-28" data-visible={$uiMode==='edit'}>
         <!-- Items List -->
-        <div class="flex gap-4 mr-8">
+        <div class="xl:hidden flex gap-2 mr-4">
+            <!-- Items List -->
+            {#each availablePlants as plant}
+                <!-- Item -->
+                {@const quantity = $inventory.get(plant.id) || 0}
+                <div class="bg-darkerwhite rounded-lg relative hover:scale-105 hover:brightness-95 transition duration-75">
+                    <div class="data-[instock=false]:saturate-0" data-instock={quantity>0}
+                        role="button" tabindex="0"
+                        aria-label={`Pick up ${plant.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                        aria-disabled={quantity <= 0}
+                        on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'plant', typeId: plant.id })}
+                        style="touch-action: none;">
+                        <ObjectIconRenderer
+                            name={plant.id}
+                            objectType={'plant'}
+                            size={48}
+                        />
+                    </div>
+                    <div class="absolute -bottom-2 -right-2 bg-brighterblack rounded-lg px-2 flex justify-center items-center">
+                        <p class="text-white">{quantity}</p>
+                    </div>
+                </div>
+            {/each}
+            {#each availableDecor as decor}
+                <!-- Item -->
+                {@const quantity = $inventory.get(decor.id) || 0}
+                <div class="bg-darkerwhite rounded-lg relative hover:scale-105 hover:brightness-95 transition duration-75">
+                    <div class="data-[instock=false]:saturate-0" data-instock={quantity>0}
+                        role="button" tabindex="0"
+                        aria-label={`Pick up ${decor.name}${quantity <= 0 ? ' (Out of stock)' : ''}`}
+                        aria-disabled={quantity <= 0}
+                        on:pointerdown={(event) => handleItemPointerDown(event, { objectType: 'decor', typeId: decor.id })}
+                        style="touch-action: none;">
+                        <ObjectIconRenderer
+                            name={decor.id}
+                            objectType={'decor'}
+                            size={48}
+                        />
+                    </div>
+                    <div class="absolute -bottom-2 -right-2 bg-brighterblack rounded-lg px-2 flex justify-center items-center">
+                        <p class="text-white">{quantity}</p>
+                    </div>
+                </div>
+            {/each}
+        </div>
+        <div class="xl:flex hidden gap-4 mr-8">
             <!-- Items List -->
             {#each availablePlants as plant}
                 <!-- Item -->
@@ -367,7 +412,29 @@
             {/each}
         </div>
         <!-- Instruments -->
-        <div class="flex gap-2">
+        <div class="xl:hidden flex gap-2">
+            <!-- Water Tool -->
+            <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
+            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+            data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
+            rounded-full size-12 text-4xl flex items-center justify-center" on:click={() => selectTool('water')}
+                data-selected={isSelected({ type: 'tool', toolType: 'water' })}>
+                <span class="material-symbols-outlined" style="font-size: 2rem;">
+                    water_drop
+                </span>
+            </button>
+            <!-- Remove Tool -->
+            <button class="bg-brighterblack text-white data-[selected=true]:bg-red data-[selected=true]:text-brighterblack
+            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+            data-[selected=true]:hover:bg-darkerred hover:bg-brightblack hover:scale-105
+            rounded-full size-12 text-4xl flex items-center justify-center" on:click={() => selectTool('remove')}
+                data-selected={isSelected({ type: 'tool', toolType: 'remove' })}>
+                <span class="material-symbols-outlined" style="font-size: 2rem;">
+                    delete
+                </span>
+            </button>
+        </div>
+        <div class="xl:flex hidden gap-2">
             <!-- Water Tool -->
             <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
             data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
@@ -391,7 +458,7 @@
         </div>
     </div>
     <!-- Widgets -->
-    <div class="absolute right-14 bottom-2 flex flex-col
+    <div class="hidden xl:flex absolute right-14 bottom-2 flex-col
     bg-brighterblack rounded-lg px-4 py-2 gap-4
     transition duration-150 data-[visible=false]:translate-y-40" data-visible={$uiMode==='edit'}>
         <p class='text-white mx-auto font-bold text-lg'>Widgets</p>

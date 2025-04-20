@@ -27,7 +27,7 @@
     {#each widgets as widget (widget.id)}
         {@const Component = widgetComponentMap[widget.componentName]}
         {#if Component}
-            <div class="widget-wrapper" style="{getGridStyle(widget)}">
+            <div class="widget-wrapper hidden xl:grid" style="{getGridStyle(widget)}">
                 <svelte:component this={Component} settings={widget.settings} />
             </div>
         {:else}
@@ -47,7 +47,10 @@
         width: 100%;
         height: 100%;
         /* Use CSS variables defined inline for grid dimensions */
-        display: grid;
+        display: none;
+        @media (width >= 80rem /* 1280px */) {
+            display: grid;
+        }
         grid-template-rows: repeat(var(--grid-rows, 8), 1fr);    /* Default fallback */
         grid-template-columns: repeat(var(--grid-cols, 12), 1fr); /* Default fallback */
         gap: var(--grid-gap, 10px); /* Adjust gap between widgets */

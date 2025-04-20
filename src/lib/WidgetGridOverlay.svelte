@@ -316,7 +316,10 @@
     .widget-grid-overlay {
         position: absolute; /* Needs to overlay the container */
         top: 0; left: 0; width: 100%; height: 100%;
-        display: grid;
+        display: none;
+        @media (width >= 80rem /* 1280px */) {
+            display: grid;
+        }
         grid-template-rows: repeat(var(--grid-rows, 8), 1fr);
         grid-template-columns: repeat(var(--grid-cols, 12), 1fr);
         gap: var(--grid-gap);
