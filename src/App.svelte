@@ -5,6 +5,21 @@
   import WidgetGridOverlay from './lib/WidgetGridOverlay.svelte'; // Import the overlay
   import { uiMode } from './lib/stores'; // Import uiMode store
   import WidgetSettingsModal from './lib/WidgetSettingsModal.svelte'; // Import the modal
+  import { onMount } from 'svelte';
+
+  let showGarden = false;
+  let initialUiReady = false;
+
+  onMount(() => {
+        const timer = setTimeout(() => {
+            console.log("Timer elapsed, showing GardenCanvas");
+            showGarden = true;
+        }, 1000); // Small delay
+
+        initialUiReady = true;
+
+        return () => clearTimeout(timer); // Cleanup timer on component destroy
+    });
 </script>
 
 <svelte:head>
@@ -12,8 +27,13 @@
 </svelte:head>
 
 <main>
-  <GardenCanvas />
-  <GardenUI />
+  {#if showGarden}
+    <GardenCanvas />
+  {/if}
+
+  {#if initialUiReady}
+    <GardenUI />
+  {/if}
 
   <!-- Conditionally render WidgetContainer in view mode -->
   {#if $uiMode === 'view'}
