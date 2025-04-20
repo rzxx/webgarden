@@ -47,10 +47,6 @@
         width: 100%;
         height: 100%;
         /* Use CSS variables defined inline for grid dimensions */
-        display: none;
-        @media (width >= 80rem /* 1280px */) {
-            display: grid;
-        }
         grid-template-rows: repeat(var(--grid-rows, 8), 1fr);    /* Default fallback */
         grid-template-columns: repeat(var(--grid-cols, 12), 1fr); /* Default fallback */
         gap: var(--grid-gap, 10px); /* Adjust gap between widgets */
