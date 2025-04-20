@@ -3,18 +3,17 @@
     // --- Import stores ---
     import { selectedAction, availablePlants, availableDecor, type SelectedAction,
         heldItem, isDraggingItem, type HeldItemInfo, selectedObjectInfo, uiMode, type UIMode,
-        // --- NEW: Import widget store and add function ---
+        // --- Import widget store and add function ---
         widgetStore, addWidget, type WidgetConfig,
         // --- Import Grid Dimensions ---
         GRID_ROWS,
         GRID_COLS,
-        // --- End Import ---
     } from './stores';
     // --- Import default sizes/settings from registry ---
     import { defaultWidgetSettings, defaultWidgetSize } from './widgetRegistry';
-    // --- End Import ---
     import { get } from 'svelte/store';
     import { inventory, getInventoryItemQuantity, addInventoryItem } from './inventory';
+    import ObjectIconRenderer from './ObjectIconRenderer.svelte';
 
     const DAILY_ITEM_COUNT = 5;
     const LAST_DAILY_REWARD_KEY = 'lastDailyRewardDate';
@@ -326,6 +325,9 @@
     {#if $uiMode === 'edit' && $selectedObjectInfo && !$heldItem && !currentAction}
         <div class="info-section selection-info">
             <h4>Selection:</h4>
+            <div class="icon-wrapper">
+                <ObjectIconRenderer name={$selectedObjectInfo.typeId} objectType={$selectedObjectInfo.objectType} growth={$selectedObjectInfo.growthProgress} size={48} />
+            </div>
             <p><strong>{$selectedObjectInfo.name}</strong> ({$selectedObjectInfo.objectType})</p>
             <p>Status: {$selectedObjectInfo.status}</p>
             {#if $selectedObjectInfo.objectType === 'plant'}
@@ -337,6 +339,13 @@
 </div>
 
 <style>
+    .icon-wrapper {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 60px; /* Adjust as needed */
+    }
+
     .ui-panel {
         position: absolute;
         top: 10px;
