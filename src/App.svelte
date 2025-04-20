@@ -14,7 +14,7 @@
         const timer = setTimeout(() => {
             console.log("Timer elapsed, showing GardenCanvas");
             showGarden = true;
-        }, 1000); // Small delay
+        }, 300); // Small delay
 
         initialUiReady = true;
 
