@@ -3,9 +3,8 @@ import ClockDateWidget from './widgets/ClockDateWidget.svelte';
 // Import * as allows access to named exports like sizeOptions
 import * as ClockDateWidgetModule from './widgets/ClockDateWidget.svelte';
 
-// Import other widgets similarly
-// import WeatherWidget from './widgets/WeatherWidget.svelte';
-// import * as WeatherWidgetModule from './widgets/WeatherWidget.svelte';
+import WeatherWidget from './widgets/WeatherWidget.svelte';
+import * as WeatherWidgetModule from './widgets/WeatherWidget.svelte';
 
 /**
  * Maps component name strings to the actual Svelte component *constructor*
@@ -13,7 +12,7 @@ import * as ClockDateWidgetModule from './widgets/ClockDateWidget.svelte';
  */
 export const widgetComponentMap: Record<string, any> = {
     ClockDateWidget: ClockDateWidget,
-    // WeatherWidget: WeatherWidget,
+    WeatherWidget: WeatherWidget,
     // Add other widgets here
 };
 
@@ -24,17 +23,17 @@ export const widgetComponentMap: Record<string, any> = {
  */
 export const widgetComponentModules: Record<string, any> = {
     ClockDateWidget: ClockDateWidgetModule,
-    // WeatherWidget: WeatherWidgetModule,
+    WeatherWidget: WeatherWidgetModule,
     // Add other widgets here
 };
 
 // Optional: You could also centralize default settings or other metadata here
 export const defaultWidgetSettings: Record<string, Record<string, any>> = {
     ClockDateWidget: {},
-    // WeatherWidget: { unit: 'C' },
+    WeatherWidget: {},
 }
 
 export const defaultWidgetSize: Record<string, { rows: number, cols: number }> = {
     ClockDateWidget: { rows: 1, cols: 2 }, // Default to the first size option perhaps
-    // WeatherWidget: { rows: 2, cols: 2 },
+    WeatherWidget: { rows: 2, cols: 2 },
 }

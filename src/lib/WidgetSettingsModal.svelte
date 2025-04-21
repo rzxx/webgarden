@@ -7,6 +7,17 @@
     // --- End Import ---
     import { get } from 'svelte/store';
 
+    interface SettingDefinition {
+        setting: string;
+        label: string; // User-friendly label
+        type: 'select' | 'number' | 'string' | 'boolean'; // Allowed types
+        options?: Array<{ value: any; label: string }>; // Required only for type: 'select'
+        placeholder?: string; // Optional for text inputs
+        step?: number | string; // Optional for number inputs
+        min?: number | string; // Optional for number inputs
+        max?: number | string; // Optional for number inputs
+    }
+
     let isOpen = false;
     let widgetId: string | null = null;
     let componentName: string | null = null;
@@ -15,8 +26,8 @@
 
     // --- Local state for selected size ---
     let availableSizes: WidgetSizeOption[] = [];
-    let settingsOptions: Array<{ setting: string, options: Array<{ value: any, label: string }> }> = [];
-    let selectedSizeKey: string = ''; // Store as "rows-cols" string key
+    let settingsOptions: SettingDefinition[] = [];
+    let selectedSizeKey: string = '';
     let selectedRowSpan: number = 1;
     let selectedColSpan: number = 1;
     // --- End Size State ---
@@ -29,20 +40,21 @@
         if (isOpen && widgetId && componentName) {
             const allWidgets = get(widgetStore);
             currentWidget = allWidgets.find((w) => w.id === widgetId) || null;
-            // Create a deep copy for local editing to avoid modifying the store directly
-            localSettings = currentWidget ? JSON.parse(JSON.stringify(currentWidget.settings || {})) : {};
-
-            // Get size options from the specific widget component module
+            // Create a deep copy for local editing, ensuring defaults are merged
             const componentModule = widgetComponentModules[componentName];
-            availableSizes = componentModule?.sizeOptions || []; // Access exported const from the module
-            settingsOptions = componentModule?.SettingsOptions || [];
+            const defaultSettings = componentModule?.defaultSettings || {};
+            const currentSettings = currentWidget?.settings || {};
+            // Merge defaults with current settings for the local copy
+            localSettings = JSON.parse(JSON.stringify({ ...defaultSettings, ...currentSettings }));
+
+            availableSizes = componentModule?.sizeOptions || [];
+            settingsOptions = componentModule?.SettingsOptions || []; // Get the structured settings
 
             if (currentWidget) {
                 selectedRowSpan = currentWidget.gridRowSpan;
                 selectedColSpan = currentWidget.gridColumnSpan;
-                selectedSizeKey = `${selectedRowSpan}-${selectedColSpan}`; // Set initial dropdown value
+                selectedSizeKey = `${selectedRowSpan}-${selectedColSpan}`;
             } else {
-                // Default if something went wrong or no sizes defined
                 availableSizes = [];
                 settingsOptions = [];
                 selectedRowSpan = 1;
@@ -53,7 +65,7 @@
         } else {
             currentWidget = null;
             localSettings = {};
-            availableSizes = []; // Reset sizes when closed
+            availableSizes = [];
             settingsOptions = [];
             selectedSizeKey = '';
         }
@@ -73,26 +85,33 @@
 
     function handleSave() {
         if (currentWidget) {
-            // Create the updated widget config with new settings
+            // Ensure numbers are saved as numbers, not strings from input fields
+            settingsOptions.forEach(opt => {
+                if (opt.type === 'number' && typeof localSettings[opt.setting] === 'string') {
+                    localSettings[opt.setting] = parseFloat(localSettings[opt.setting]);
+                    // Handle potential NaN if parsing fails, maybe revert to default or show error
+                    if (isNaN(localSettings[opt.setting])) {
+                        const componentModule = widgetComponentModules[componentName!]; // We know componentName is set here
+                        localSettings[opt.setting] = componentModule?.defaultSettings?.[opt.setting] ?? 0; // Fallback to default or 0
+                    }
+                }
+            });
+
             const updatedWidget: WidgetConfig = {
                 ...currentWidget,
-                settings: localSettings, // Use the locally edited settings
-                gridRowSpan: selectedRowSpan, // Use selected size
-                gridColumnSpan: selectedColSpan, // Use selected size
+                // Save the potentially type-corrected local settings
+                settings: localSettings,
+                gridRowSpan: selectedRowSpan,
+                gridColumnSpan: selectedColSpan,
             };
-            updateWidget(updatedWidget); // Update the store
+            updateWidget(updatedWidget);
         }
-        closeSettingsModal(); // Close the modal
+        closeSettingsModal();
     }
 
     function handleCancel() {
         closeSettingsModal(); // Just close without saving
     }
-
-    // --- Basic Settings Field Example ---
-    // In a real app, you'd generate fields based on componentName or a settings schema
-    let settingTitle = localSettings['title'] || '';
-    $: localSettings['title'] = settingTitle; // Keep localSettings updated
 
     // Handle Escape key to close
     function handleKeydown(event: KeyboardEvent) {
@@ -101,14 +120,15 @@
         }
     }
 
-    // --- NEW: Keyboard handler for overlay click ---
     function handleOverlayKeydown(event: KeyboardEvent) {
-        // Trigger cancel if Enter or Space is pressed on the overlay
-        if (event.key === 'Enter' || event.key === ' ') {
+        // Trigger cancel ONLY if Enter is pressed directly on the overlay element itself
+        if (event.target === event.currentTarget && (event.key === 'Enter')) {
+            // Check if the event target is the same as the element the listener is attached to
+            console.log("Enterpressed directly on overlay, cancelling."); // For debugging
+            event.preventDefault(); // Prevent any default action for Enter on the overlay div
             handleCancel();
         }
     }
-    // --- End Overlay Keydown Handler ---
 
     onMount(() => {
         // Add keydown listener when modal is potentially open
@@ -117,6 +137,10 @@
             window.removeEventListener('keydown', handleKeydown);
         };
     });
+
+    function getInputId(settingKey: string): string {
+        return `setting-${widgetId}-${settingKey}`;
+    }
 </script>
 
 {#if isOpen && currentWidget}
@@ -137,63 +161,109 @@
             aria-labelledby="modal-title"
             tabindex="-1"
         >
-            <h3 id="modal-title">Settings: {componentName}</h3>
-            <p><small>ID: {widgetId}</small></p>
+            <h3 id="modal-title" class="modal-header">Settings: {componentName}</h3>
+            <!-- <p><small>ID: {widgetId}</small></p> -->
 
             <hr />
 
             <!-- Dynamic Settings Form Area -->
-            {#if settingsOptions.length > 0}
-            {#each settingsOptions as settingOpt}
-                <div class="form-group">
-                    <label for={"setting-" + settingOpt.setting}>{settingOpt.setting.charAt(0).toUpperCase() + settingOpt.setting.slice(1)}:</label>
-                    <select
-                        id={"setting-" + settingOpt.setting}
-                        bind:value={localSettings[settingOpt.setting]}
-                    >
-                        {#each settingOpt.options as opt}
-                            <option value={opt.value}>{opt.label}</option>
-                        {/each}
-                    </select>
+            <form on:submit|preventDefault={handleSave}>
+                {#if settingsOptions.length > 0}
+                    <h4>Widget Settings</h4>
+                    {#each settingsOptions as settingOpt (settingOpt.setting)}
+                        {@const inputId = getInputId(settingOpt.setting)}
+                        <div class="form-group">
+                            {#if settingOpt.type === 'boolean'}
+                                <!-- Special layout for boolean (checkbox) -->
+                                <div class="checkbox-group">
+                                    <input
+                                        type="checkbox"
+                                        id={inputId}
+                                        bind:checked={localSettings[settingOpt.setting]}
+                                    />
+                                    <label for={inputId}>{settingOpt.label}</label>
+                                </div>
+                            {:else}
+                                <!-- Standard layout for other types -->
+                                <label for={inputId}>{settingOpt.label}:</label>
+                                {#if settingOpt.type === 'select'}
+                                    <select
+                                        id={inputId}
+                                        bind:value={localSettings[settingOpt.setting]}
+                                        class="input-field"
+                                    >
+                                        {#each settingOpt.options || [] as opt}
+                                            <option value={opt.value}>{opt.label}</option>
+                                        {/each}
+                                    </select>
+                                {:else if settingOpt.type === 'number'}
+                                    <input
+                                        type="number"
+                                        id={inputId}
+                                        bind:value={localSettings[settingOpt.setting]}
+                                        step={settingOpt.step || 'any'}
+                                        min={settingOpt.min}
+                                        max={settingOpt.max}
+                                        class="input-field"
+                                        placeholder={settingOpt.placeholder || ''}
+                                    />
+                                {:else if settingOpt.type === 'string'}
+                                    <input
+                                        type="text"
+                                        id={inputId}
+                                        bind:value={localSettings[settingOpt.setting]}
+                                        placeholder={settingOpt.placeholder || ''}
+                                        class="input-field"
+                                    />
+                                {:else}
+                                    <!-- Fallback for unknown type (or treat as string) -->
+                                     <input
+                                        type="text"
+                                        id={inputId}
+                                        bind:value={localSettings[settingOpt.setting]}
+                                        class="input-field"
+                                        placeholder="Unknown setting type"
+                                    />
+                                {/if}
+                            {/if}
+                        </div>
+                    {/each}
+                    <hr />
+                {/if}
+
+
+                <!-- Size Selection Dropdown -->
+                <h4>Widget Size</h4>
+                {#if availableSizes.length > 0}
+                    <div class="form-group">
+                        <label for="widget-size">Size:</label>
+                        <select id="widget-size" bind:value={selectedSizeKey} class="input-field">
+                            {#each availableSizes as sizeOpt (sizeOpt.label)}
+                                <option value="{sizeOpt.rows}-{sizeOpt.cols}">
+                                    {sizeOpt.label} ({sizeOpt.rows}x{sizeOpt.cols})
+                                </option>
+                            {/each}
+                        </select>
+                    </div>
+                {:else if componentName}
+                    <p><em>(No predefined sizes available for {componentName})</em></p>
+                {/if}
+
+                <!-- Optional: Display raw settings for debugging -->
+                <!--
+                <details>
+                    <summary>Raw Settings</summary>
+                    <pre>{JSON.stringify(localSettings, null, 2)}</pre>
+                </details>
+                -->
+
+                <hr />
+
+                <div class="modal-actions">
+                    <button type="button" on:click={handleCancel} class="button secondary">Cancel</button>
+                    <button type="submit" class="button primary">Save Settings</button>
                 </div>
-            {/each}
-            {/if}
-
-            <!-- NEW: Size Selection Dropdown -->
-            {#if availableSizes.length > 0}
-                <div class="form-group">
-                    <label for="widget-size">Size:</label>
-                    <select id="widget-size" bind:value={selectedSizeKey}>
-                        {#each availableSizes as sizeOpt (sizeOpt.label)}
-                            <option value="{sizeOpt.rows}-{sizeOpt.cols}">
-                                {sizeOpt.label} ({sizeOpt.rows} Rows x {sizeOpt.cols} Cols)
-                            </option>
-                        {/each}
-                    </select>
-                </div>
-            {:else if componentName}
-                <p><em>(No predefined sizes available for {componentName})</em></p>
-            {/if}
-            <!-- End Size Selection -->
-
-            <!-- Add more setting fields here based on widget type -->
-            {#if componentName === 'ClockWidget'}
-                <!-- Example: Add clock-specific settings if needed -->
-                <p><em>(No specific settings for Clock yet)</em></p>
-            {/if}
-
-            <!-- Display raw settings for debugging -->
-            <details>
-                <summary>Raw Settings</summary>
-                <pre>{JSON.stringify(localSettings, null, 2)}</pre>
-            </details>
-
-            <hr />
-
-            <div class="modal-actions">
-                <button on:click={handleCancel}>Cancel</button>
-                <button on:click={handleSave} class="primary">Save Settings</button>
-            </div>
+            </form> <!-- End Form -->
         </div>
     </div>
 {/if}
@@ -203,67 +273,129 @@
 <style>
     .modal-overlay {
         position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
+        inset: 0; /* top, left, right, bottom */
         background-color: rgba(0, 0, 0, 0.6);
         display: flex;
         justify-content: center;
         align-items: center;
-        z-index: 1000; /* Ensure it's on top */
+        z-index: 1000;
+        padding: 20px; /* Add padding for smaller screens */
     }
     .modal-content {
         background-color: white;
-        padding: 20px;
+        padding: 20px 25px;
         border-radius: 8px;
         box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
         min-width: 300px;
         max-width: 500px;
+        width: 90%; /* Responsive width */
         z-index: 1001;
+        max-height: 90vh; /* Prevent modal becoming too tall */
+        overflow-y: auto; /* Allow scrolling if content overflows */
+        color: #333; /* Darker text for better readability */
+    }
+    .modal-header {
+        margin-top: 0;
+        margin-bottom: 15px;
+        font-size: 1.4em;
+        color: #111;
     }
     .modal-actions {
         display: flex;
         justify-content: flex-end;
         gap: 10px;
-        margin-top: 20px;
+        margin-top: 25px;
+        padding-top: 15px;
+        border-top: 1px solid #eee; /* Separator line */
     }
     .form-group {
-        margin-bottom: 15px;
+        margin-bottom: 18px; /* Increased spacing */
     }
     label {
         display: block;
-        margin-bottom: 5px;
+        margin-bottom: 6px;
+        font-weight: 500; /* Slightly bolder labels */
+        font-size: 0.95em;
     }
-    button.primary {
-        background-color: #007bff;
-        color: white;
+    .input-field {
+        display: block; /* Ensure inputs take full block width */
+        width: 100%;
+        padding: 10px 12px; /* More padding */
+        box-sizing: border-box;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        font-size: 1em;
+        background-color: #f9f9f9; /* Slightly off-white background */
     }
+    .input-field:focus {
+         border-color: #007bff;
+         outline: none;
+         box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+         background-color: #fff;
+    }
+
+    /* Styles for checkbox */
+    .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 8px; /* Space between checkbox and label */
+    }
+    .checkbox-group input[type="checkbox"] {
+       width: auto; /* Override width: 100% */
+       margin: 0;
+       /* Optional: Style checkbox appearance */
+       accent-color: #007bff; /* Color the checkmark */
+       transform: scale(1.1); /* Slightly larger checkbox */
+    }
+    .checkbox-group label {
+        margin-bottom: 0; /* Remove bottom margin for inline label */
+        font-weight: normal; /* Normal weight for checkbox label */
+    }
+
+    h4 {
+        margin-top: 20px;
+        margin-bottom: 10px;
+        font-size: 1.1em;
+        color: #444;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 5px;
+    }
+
     hr {
-        margin: 15px 0;
+        margin: 20px 0;
         border: none;
         border-top: 1px solid #eee;
     }
-    pre {
-        background-color: #f5f5f5;
-        padding: 5px;
+    .button {
+        padding: 8px 16px;
+        border: none;
         border-radius: 4px;
-        font-size: 0.9em;
-        max-height: 100px;
-        overflow-y: auto;
+        cursor: pointer;
+        font-size: 0.95em;
+        transition: background-color 0.2s ease;
     }
-    select {
-        width: 100%;
-        padding: 8px;
-        box-sizing: border-box;
+    .button.primary {
+        background-color: #007bff;
+        color: white;
     }
-    .modal-overlay:focus {
-        /* Optional: Add visual focus indicator for the overlay */
-        outline: 2px solid dodgerblue;
-        outline-offset: 2px;
+     .button.primary:hover {
+        background-color: #0056b3;
+    }
+    .button.secondary {
+        background-color: #f0f0f0;
+        color: #333;
+        border: 1px solid #ccc;
+    }
+    .button.secondary:hover {
+         background-color: #e0e0e0;
+    }
+
+    /* Optional: Add visual focus indicator for the overlay */
+    .modal-overlay:focus-visible {
+        outline: 3px solid dodgerblue;
+        outline-offset: 3px;
     }
     .modal-content:focus {
-        /* Optional: Add focus style if needed when programmatically focused */
-        outline: none;
+        outline: none; /* Usually remove outline here as focus is managed internally */
     }
 </style>

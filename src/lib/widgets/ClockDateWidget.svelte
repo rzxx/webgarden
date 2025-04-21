@@ -12,6 +12,8 @@
     export const SettingsOptions = [
         {
             setting: 'show',
+			label: 'Elements',
+			type: 'select',
             options: [
                 { value: 'both', label: 'Date & Time' },
                 { value: 'clock', label: 'Time Only' },
@@ -20,6 +22,8 @@
         },
         {
             setting: 'order',
+			label: 'Order',
+			type: 'select',
             options: [
 				{ value: 'clockFirst', label: 'Time First' },
                 { value: 'dateFirst', label: 'Date First' }
@@ -27,6 +31,8 @@
         },
         {
             setting: 'dateFormat',
+			label: 'Date Format',
+			type: 'select',
             options: [
                 { value: 'DD/MM/YYYY', label: '31/12/2023' },
                 { value: 'MM/DD/YYYY', label: '12/31/2023' },
@@ -41,6 +47,8 @@
         },
         {
             setting: 'clockFormat',
+			label: 'Time Format',
+			type: 'select',
             options: [
                 { value: '12h', label: '12h (11:59 PM)' },
                 { value: '12h_seconds', label: '12h with seconds (11:59:01 PM)' },
@@ -50,6 +58,8 @@
         },
         {
             setting: 'alignment',
+			label: 'Alignment',
+			type: 'select',
             options: [
                 { value: 'left', label: 'Left' },
                 { value: 'center', label: 'Center' },
