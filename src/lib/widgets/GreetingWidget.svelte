@@ -96,10 +96,9 @@
 
 	onMount(() => {
 		// Update time every minute is enough for greetings, but second keeps it synced with clock
-        // Sticking to seconds for consistency with your clock example
 		intervalId = setInterval(() => {
 			now = new Date();
-		}, 1000); // Update every second
+		}, 60000);
 
         // Initial update
         now = new Date();
