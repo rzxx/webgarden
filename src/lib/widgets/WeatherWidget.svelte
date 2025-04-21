@@ -120,10 +120,10 @@
 
     const CACHE_PREFIX = 'weatherWidgetCache_';
 
-    function getCacheKey(latitude: number | null, longitude: number | null): string | null {
+    function getCacheKey(latitude: number | null, longitude: number | null, tempUnit: string, windUnit: string): string | null {
         if (latitude == null || longitude == null) return null;
         // Normalize coords slightly for key stability
-        return `${CACHE_PREFIX}${latitude.toFixed(4)}_${longitude.toFixed(4)}`;
+        return `${CACHE_PREFIX}${latitude.toFixed(4)}_${longitude.toFixed(4)}_t${tempUnit}_w${windUnit}`;
     }
 
     function readCache(key: string): { timestamp: number; data: any } | null {
@@ -274,7 +274,7 @@
         currentFetchController = new AbortController(); // New controller for weather fetch
         const signal = currentFetchController.signal;
 
-        const cacheKey = getCacheKey(resolvedLatitude, resolvedLongitude);
+        const cacheKey = getCacheKey(resolvedLatitude, resolvedLongitude, mergedSettings.tempUnit, mergedSettings.windSpeedUnit);
         const cached = cacheKey ? readCache(cacheKey) : null;
         const intervalMillis = (mergedSettings.updateIntervalMinutes || 60) * 60 * 1000; // Default 1hr
 
@@ -407,22 +407,21 @@
     $: if (mergedSettings.tempUnit || mergedSettings.windSpeedUnit) {
         // Need to ensure coordinates are resolved before fetching
         if (resolvedLatitude !== null && resolvedLongitude !== null) {
-             // Trigger check/fetch, but don't reset geocoding state
-             console.log("Unit setting changed, re-checking weather.");
-             checkCacheAndFetchWeather();
+            // Trigger check/fetch, but don't reset geocoding state
+            console.log("Unit setting changed, re-checking weather.");
+            checkCacheAndFetchWeather();
         }
     }
 
      // React to interval changes - reschedule the next refresh
     $: if (mergedSettings.updateIntervalMinutes) {
-         console.log("Update interval changed, rescheduling refresh.");
-         // Reschedule based on the *last known successful fetch or cache read* time
-         const cacheKey = getCacheKey(resolvedLatitude, resolvedLongitude);
-         const cached = cacheKey ? readCache(cacheKey) : null;
-         const lastDataTimestamp = weatherData ? (cached?.timestamp || Date.now()) : Date.now(); // Use cache timestamp if available
-         const intervalMillis = (mergedSettings.updateIntervalMinutes || 60) * 60 * 1000;
-         const nextRefreshDelay = Math.max(0, (lastDataTimestamp + intervalMillis) - Date.now());
-         scheduleNextRefresh(nextRefreshDelay);
+        console.log("Update interval changed, rescheduling refresh.");
+        const cacheKey = getCacheKey(resolvedLatitude, resolvedLongitude, mergedSettings.tempUnit, mergedSettings.windSpeedUnit);
+        const cached = cacheKey ? readCache(cacheKey) : null;
+        const lastDataTimestamp = cached?.timestamp || Date.now();
+        const intervalMillis = (mergedSettings.updateIntervalMinutes || 60) * 60 * 1000;
+        const nextRefreshDelay = Math.max(0, (lastDataTimestamp + intervalMillis) - Date.now());
+        scheduleNextRefresh(nextRefreshDelay);
     }
 </script>
 
@@ -434,7 +433,7 @@ font-outfit" data-aligncenter={mergedSettings.alignment==='center'}>
         <span class="material-symbols-outlined text-red">error</span>
         <p class="text-sm text-red">{error}</p>
     {:else if isLoading}
-        <span class="material-symbols-outlined animate-spin">progress_activity</span>
+        <span class="material-symbols-outlined animate-spin justify-self-center">progress_activity</span>
         {#if isGeocoding}
             <p class="text-sm">Finding Location...</p>
         {:else if isFetchingWeather}
