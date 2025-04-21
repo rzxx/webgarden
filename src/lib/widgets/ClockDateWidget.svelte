@@ -1,12 +1,4 @@
 <script context="module" lang="ts">
-	// Assuming WidgetSizeOption is defined elsewhere, e.g., in '../stores'
-	// If not, you might define it here or import it properly.
-	// Example definition:
-	// export interface WidgetSizeOption {
-	//  rows: number;
-	//  cols: number;
-	//  label: string;
-	// }
 	import type { WidgetSizeOption } from '../stores'; // Adjust path if needed
 
 	export const sizeOptions: WidgetSizeOption[] = [
@@ -29,8 +21,8 @@
         {
             setting: 'order',
             options: [
-                { value: 'dateFirst', label: 'Date First' },
-                { value: 'clockFirst', label: 'Time First' }
+				{ value: 'clockFirst', label: 'Time First' },
+                { value: 'dateFirst', label: 'Date First' }
             ]
         },
         {
@@ -64,30 +56,6 @@
                 { value: 'right', label: 'Right' }
             ]
         },
-        {
-            setting: 'theme',
-            options: [
-                { value: 'light', label: 'Light' },
-                { value: 'dark', label: 'Dark' },
-                { value: 'transparent-light', label: 'Transparent Light Text' },
-                { value: 'transparent-dark', label: 'Transparent Dark Text' }
-            ]
-        },
-        {
-            setting: 'opacity',
-            options: [
-                { value: 1.0, label: '100%' },
-                { value: 0.9, label: '90%' },
-                { value: 0.8, label: '80%' },
-                { value: 0.7, label: '70%' },
-                { value: 0.6, label: '60%' },
-                { value: 0.5, label: '50%' },
-                { value: 0.4, label: '40%' },
-                { value: 0.3, label: '30%' },
-                { value: 0.2, label: '20%' },
-                { value: 0.1, label: '10%' }
-            ]
-        }
     ];
 
     export const defaultSettings = {
@@ -96,16 +64,7 @@
 		dateFormat: 'WeekdayDDMMMMYYYY',
 		clockFormat: '24h',
 		alignment: 'center',
-		theme: 'dark',
-		opacity: 1.0
 	};
-    
-    const themes = {
-        light: { background: '#fff', foreground: '#222' },
-        dark: { background: '#222', foreground: '#fff' },
-        'transparent-light': { background: 'rgba(255,255,255,0.0)', foreground: '#fff' },
-        'transparent-dark': { background: 'rgba(0,0,0,0.0)', foreground: '#222' }
-    };
 </script>
 
 <script lang="ts">
@@ -122,9 +81,6 @@
 	// Merge incoming settings with defaults
 	$: mergedSettings = { ...defaultSettings, ...settings };
 
-    // Always pick a valid theme, fallback to 'dark'
-	$: selectedTheme = themes[mergedSettings.theme as keyof typeof themes] ?? themes.dark;
-
 	// Format Date based on settings
 	$: formattedDate = (() => {
 		const options: Intl.DateTimeFormatOptions = {};
@@ -136,9 +92,9 @@
 
 		switch (mergedSettings.dateFormat) {
 			case 'DD/MM/YYYY':
-				return `${day}/${month}/${year}`;
+				return `${day}.${month}.${year}`;
 			case 'MM/DD/YYYY':
-				return `${month}/${day}/${year}`;
+				return `${month}.${day}.${year}`;
 			case 'YYYY-MM-DD':
 				return `${year}-${month}-${day}`;
 			case 'ShortDate':
@@ -163,11 +119,11 @@
 				options.day = 'numeric';
 				break;
             case 'WeekdayDDMMYYYY':
-                return `${weekday}, ${day}/${month}/${year}`;
+                return `${weekday}, ${day}.${month}.${year}`;
             case 'WeekdayDDMMMMYYYY':
                 return `${weekday}, ${day} ${monthLong} ${year}`;
 			default: // Fallback to a sensible default if format is unknown
-				return `${day}/${month}/${year}`;
+				return `${day}.${month}.${year}`;
 		}
         // Use Intl for locale-aware formatting for relevant cases
         if (Object.keys(options).length > 0) {
@@ -208,14 +164,6 @@
 		return new Intl.DateTimeFormat(undefined, options).format(now);
 	})();
 
-    // Determine CSS styles based on settings
-    $: widgetStyles = `
-        background-color: ${selectedTheme.background};
-        color: ${selectedTheme.foreground};
-        opacity: ${mergedSettings.opacity};
-        text-align: ${mergedSettings.alignment};
-    `;
-
 	// --- Lifecycle ---
 
 	onMount(() => {
@@ -237,64 +185,20 @@
 </script>
 
 <!-- HTML Structure -->
-<div class="widget-container" style={widgetStyles}>
+<div class="flex flex-col data-[align=left]:items-start data-[align=center]:items-center data-[align=right]:items-end
+bg-white rounded-lg text-black p-4 justify-center
+font-outfit" data-align={mergedSettings.alignment}>
 	{#if mergedSettings.show === 'both'}
 		{#if mergedSettings.order === 'clockFirst'}
-			<span class="widget-time">{formattedTime}</span>
-			<span class="widget-date">{formattedDate}</span>
+			<p class="text-2xl font-semibold">{formattedTime}</p>
+			<p class="">{formattedDate}</p>
 		{:else}
-			<span class="widget-date">{formattedDate}</span>
-			<span class="widget-time">{formattedTime}</span>
+			<p class="text-2xl font-semibold">{formattedDate}</p>
+			<p class="">{formattedTime}</p>
 		{/if}
 	{:else if mergedSettings.show === 'clock'}
-		<span class="widget-time">{formattedTime}</span>
+		<p class="text-4xl font-semibold">{formattedTime}</p>
 	{:else if mergedSettings.show === 'date'}
-		<span class="widget-date">{formattedDate}</span>
+		<p class="text-3xl font-semibold">{formattedDate}</p>
 	{/if}
 </div>
-
-<!-- Styling -->
-<style>
-	.widget-container {
-		display: flex;
-        /* Adjust flex direction based on how you want clock/date stacked or side-by-side */
-        /* Example: Stack vertically */
-		flex-direction: column;
-        /* Example: Side-by-side (might need media queries for small sizes) */
-        /* flex-direction: row; */
-        /* gap: 0.5em; */
-
-		justify-content: center; /* Vertical centering if flex-direction is column */
-		width: 100%;
-		height: 100%;
-		padding: 0.5em; /* Add some padding */
-		box-sizing: border-box; /* Include padding in width/height */
-		overflow: hidden; /* Prevent content overflow */
-		white-space: nowrap; /* Prevent text wrapping, might need adjustment based on size/content */
-        line-height: 1.2; /* Adjust line height */
-        font-family: sans-serif; /* Basic font */
-        /* text-align is handled by inline style */
-	}
-
-    /* Optional: Style for individual parts if needed */
-    .widget-time, .widget-date {
-        display: block; /* Make them stack if flex-direction is column */
-    }
-
-    /* Add a small gap between date and time if both are shown and stacked */
-    .widget-time + .widget-date,
-    .widget-date + .widget-time {
-         /* margin-top: 0.2em; */ /* Adjust spacing as needed if stacked */
-    }
-
-	/* If using flex-direction: row, you might want space between */
-	/*
-    .widget-container[style*="flex-direction: row"] .widget-time + .widget-date,
-    .widget-container[style*="flex-direction: row"] .widget-date + .widget-time {
-        margin-left: 0.5em;
-    }
-    */
-
-    /* Consider adding font size adjustments based on widget size, perhaps via props or CSS variables */
-
-</style>

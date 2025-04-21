@@ -62,16 +62,6 @@
     .widget-wrapper {
         /* Allow widgets inside to be interactive */
         pointer-events: auto;
-        background-color: rgba(255, 255, 255, 0.6); /* Example background */
-        border-radius: 8px;
-        padding: 10px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        overflow: hidden; /* Prevent content spilling out */
-        display: flex; /* Use flexbox for content alignment */
-        flex-direction: column;
-        justify-content: center; /* Center content vertically */
-        align-items: center; /* Center content horizontally */
-        box-sizing: border-box;
     }
 
     .widget-wrapper.error {
