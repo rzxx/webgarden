@@ -460,7 +460,7 @@
     <!-- Widgets -->
     <div class="hidden xl:flex fixed right-14 bottom-2 flex-col
     bg-brighterblack rounded-lg px-4 py-2 gap-4
-    transition duration-150 data-[visible=false]:translate-y-52" data-visible={$uiMode==='edit'}>
+    transition duration-150 data-[visible=false]:translate-y-62" data-visible={$uiMode==='edit'}>
         <p class='text-white mx-auto font-bold text-lg'>Widgets</p>
         <button class="rounded-lg bg-white hover:bg-darkerwhite hover:scale-105 transition duration-75 text-black font-semibold px-3 py-1 flex justify-between items-center gap-4" on:click={() => handleAddWidget('ClockDateWidget')}>
             <p>Add Clock and Date Widget</p>
@@ -470,6 +470,12 @@
         </button>
         <button class="rounded-lg bg-white hover:bg-darkerwhite hover:scale-105 transition duration-75 text-black font-semibold px-3 py-1 flex justify-between items-center gap-4" on:click={() => handleAddWidget('WeatherWidget')}>
             <p>Add Weather Widget</p>
+            <span class="material-symbols-outlined -mb-1">
+                add
+            </span>
+        </button>
+        <button class="rounded-lg bg-white hover:bg-darkerwhite hover:scale-105 transition duration-75 text-black font-semibold px-3 py-1 flex justify-between items-center gap-4" on:click={() => handleAddWidget('GreetingWidget')}>
+            <p>Add Greeting Widget</p>
             <span class="material-symbols-outlined -mb-1">
                 add
             </span>
