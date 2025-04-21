@@ -17,7 +17,7 @@ Currently available:
 - Placing and removing plants and decor.
 - Caring for plants *(watering)*.
 - Observing the change of day and night *(linked to device time!)*.
-- Adding widgets to the screen *(currently only time and date, in development)*.
+- Adding widgets to the screen *(currently only time, date and weather, in development)*.
 
 ## How to use it?
 
