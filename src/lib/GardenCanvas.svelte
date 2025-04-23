@@ -3,7 +3,7 @@ import { onMount, onDestroy } from 'svelte';
 import * as THREE from 'three';
 import { MathUtils, Vector2 } from 'three'; // For mapLinear and lerp
 import { selectedAction, type SelectedAction, heldItem, isDraggingItem, type HeldItemInfo,
-    availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo, uiMode } from './stores';
+    availableDecor, availablePlants, selectedObjectInfo, type SelectedObjectDisplayInfo, uiMode, isGardenReady } from './stores';
 import { plantConfigs, decorConfigs, type PlantConfig, type DecorConfig, type GrowthStage } from './objectConfigs';
 // --- NEW: Import inventory functions ---
 import { initializeInventory, decrementInventoryItem, getInventoryItemQuantity, incrementInventoryItem } from './inventory';
@@ -20,18 +20,6 @@ import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js'; // I
 const toonGradientMap = new THREE.TextureLoader().load('/threeTone.jpg')
 toonGradientMap.minFilter = THREE.NearestFilter
 toonGradientMap.magFilter = THREE.NearestFilter
-
-// --- Plant Configuration ---
-
-
-// --- Updated Plant Configs ---
-
-// --- End Plant Configuration ---
-
-// --- Decor Configuration ---
-
-// --- End Decor Configuration ---
-
       
 // --- Decor Instance Data Type (Updated) ---
 interface DecorInfo {
@@ -3110,6 +3098,11 @@ function renderFrame() {
         composer.render(); // <-- Use composer to render
     }
 
+    if (initComplete && !get(isGardenReady)) {
+        isGardenReady.set(true);
+        console.log("First render complete, Garden is ready.");
+    }
+
     // --- Manage Render Loop ---
     const loopShouldBeActive = isInteracting || activeAnimations.length > 0;
 
@@ -3137,6 +3130,9 @@ function renderFrame() {
 let initComplete = false;
 onMount(() => {
 	if (!container) return;
+
+    // Reset readiness state on mount (important if component is remounted)
+    isGardenReady.set(false);
 
     // --- Store Subscriptions (Keep as is) ---
     const unsubHeldItem = heldItem.subscribe(value => { currentHeldItem = value; });
@@ -3325,6 +3321,7 @@ onMount(() => {
 
     }).catch(error => {
         console.error("Error in async setup chain:", error);
+        isGardenReady.set(false);
     });
 
 	// --- Return Cleanup Function ---
@@ -3351,6 +3348,7 @@ onMount(() => {
 onDestroy(() => {
     initComplete = false;
     assetsLoaded = false;
+    isGardenReady.set(false);
 
 	stopRenderLoop();
 	window.removeEventListener('beforeunload', handleBeforeUnload);
@@ -3450,18 +3448,8 @@ onDestroy(() => {
 
 <div
     bind:this={container}
-    style="width: 100%; height: 100%; touch-action: none;"
-    role="application"
+    role="application" class="opacity-0 data-[ready=true]:opacity-100 transition-opacity duration-1000 ease-in-out
+    w-full h-full touch-none block overflow-hidden cursor-default" data-ready={$isGardenReady}
 >
     <!-- Three.js canvas will be appended here -->
 </div>
-
-<style>
-div {
-  display: block;
-  width: 100%;
-  height: 100%; /* Make div fill container */
-  overflow: hidden; /* Prevent scrollbars if canvas slightly overflows */
-  cursor: default;
-}
-</style>

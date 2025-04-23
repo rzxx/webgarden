@@ -57,6 +57,8 @@ export interface SelectedObjectDisplayInfo {
 
 export const selectedObjectInfo = writable<SelectedObjectDisplayInfo | null>(null);
 
+export const isGardenReady = writable<boolean>(false);
+
 export type UIMode = 'view' | 'edit';
 export const uiMode = writable<UIMode>('view'); // Default to 'view'
 
