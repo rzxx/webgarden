@@ -311,7 +311,7 @@
         data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75
         data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105 data-[selected=true]:-translate-y-16 xl:data-[selected=true]:translate-y-0
         rounded-full size-8 text-4xl flex items-center justify-center" data-selected={$uiMode==='edit'} on:click={toggleUIMode}>
-            <span class="material-symbols-outlined"style="font-size: 1.5rem;">
+            <span class="material-symbols-outlined" style="font-size: 1.5rem;">
                 settings
             </span>
         </button>

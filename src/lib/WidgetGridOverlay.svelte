@@ -33,46 +33,24 @@
     function getGridStyle(widget: WidgetConfig): string {
         let displayRowStart: number;
         let displayColStart: number;
-        let extraStyles = ''; // For dragging visuals
 
         // If this widget is the one being dragged, use the temporary snapped position
 		if (widget.id === draggingWidgetId) {
             displayRowStart = currentDragSnapRow;
             displayColStart = currentDragSnapCol;
-            // Add visual styles for the element being dragged
-            extraStyles = `
-                opacity: 0.65;
-                transform: scale(1.02); /* Slight lift effect */
-                z-index: 1000; /* Ensure it's above others */
-                box-shadow: 0 5px 15px rgba(0,0,0,0.3);
-                border-style: solid; /* Make border more prominent */
-                transition: transform 0.1s ease-out, opacity 0.1s ease-out, box-shadow 0.1s ease-out; /* Smooth appearance changes */
-                pointer-events: none; /* Ignore pointer events on itself while dragging */
-            `;
 		} else {
             // Otherwise, use its stored position from the store
             displayRowStart = widget.gridRowStart;
             displayColStart = widget.gridColumnStart;
-            // Ensure non-dragged items don't have lingering drag styles/transitions
-            extraStyles = `
-                opacity: 1;
-                transform: scale(1);
-                z-index: 1;
-                box-shadow: none;
-                border-style: dashed; /* Or your default style */
-                transition: none; /* Prevent transitions unless specifically hovering */
-                pointer-events: auto; /* Make sure non-dragged are interactive */
-            `;
         }
 
         // Calculate end positions based on the display start and span
         const rowEnd = displayRowStart + widget.gridRowSpan;
 		const colEnd = displayColStart + widget.gridColumnSpan;
 
-		// Combine grid placement and dynamic styles
+		// Combine grid placement
 		return `
             grid-area: ${displayRowStart} / ${displayColStart} / ${rowEnd} / ${colEnd};
-            ${extraStyles}
         `;
 	}
 
@@ -144,11 +122,8 @@
 		currentDragSnapCol = widget.gridColumnStart;
 		gridPositionChangedDuringDrag = false;
 
-        // 3. Set cursor style on the element that triggered the drag
-        draggedElement.style.cursor = 'grabbing';
-
-        // 4. Trigger reactivity to apply initial dragging styles via getGridStyle
-        // This will make the element slightly transparent, scaled, etc.
+        // 4. Trigger reactivity
+        // TODO: check if needed with tailwind styles rewrite
         widgets = [...widgets];
 
 		// 5. Capture pointer and add listeners
@@ -231,9 +206,6 @@
 			try { elementInitiatingDrag.releasePointerCapture(event.pointerId); }
             catch (e) { console.warn('Could not release pointer capture:', e); }
 		}
-        // Reset cursor on the element that initiated drag
-        elementInitiatingDrag.style.cursor = '';
-
 
 		// Clear state variables AFTER use
 		draggingWidgetId = null; // This is crucial for getGridStyle to stop applying drag styles
@@ -295,32 +267,66 @@
 >
     {#each widgets as widget (widget.id)}
         <div
-            class="widget-placeholder"
-            style="{getGridStyle(widget)}"
+            class="box-border overflow-hidden rounded-xl flex flex-col justify-between p-2
+            cursor-move select-none touch-none pointer-events-auto
+            bg-whitealpha hover:bg-darkerwhitealpha data-[dragged=true]:bg-white transition duration-150
+            font-outfit"
+            data-dragged={widget.id === draggingWidgetId}
             on:pointerdown={(e) => handlePointerDown(e, widget)}
             draggable="false"
             data-widget-id={widget.id}
+            style={getGridStyle(widget)}
         >
-            <!-- Content of the placeholder -->
-            <div class="placeholder-content">
-                {widget.componentName} ({widget.gridRowSpan}x{widget.gridColumnSpan})
-                <small>{widget.id.substring(0, 6)}</small>
-            </div>
-
-			<div class="placeholder-buttons">
-				<button
-					class="placeholder-button settings-button"
-					title="Widget Settings"
-					on:click={(e) => handleOpenSettings(e, widget.id, widget.componentName)}
-					on:pointerdown|stopPropagation
-				>⚙️</button>
-				<button
-					class="placeholder-button remove-button"
-					title="Remove Widget"
-					on:click={(e) => handleRemoveWidget(e, widget.id)}
-					on:pointerdown|stopPropagation
-				>❌</button>
-			</div>
+            <!-- Content of the widget placeholder -->
+            {#if widget.gridRowSpan < widget.gridColumnSpan}
+                <div class="flex justify-between items-start">
+                    <div class="-mt-1">
+                        <p class="text-brighterblack">{widget.componentName}</p>
+                        <p class="text-xs text-brightblack font-light">{widget.gridRowSpan}x{widget.gridColumnSpan}</p>
+                    </div>
+                    <button class="bg-red hover:bg-darkerred transition duration-150 cursor-pointer rounded-xl px-1
+                    flex justify-center items-center w-fit h-fit" title="Remove Widget"
+                    on:click={(e) => handleRemoveWidget(e, widget.id)} on:pointerdown|stopPropagation>
+                        <span class="material-symbols-outlined text-brighterblack" style="font-size: 1rem;">
+                            close
+                        </span>
+                    </button>
+                </div>
+                <div class="self-end">
+                    <button
+                        class="bg-brightblack hover:bg-brighterblack transition duration-150 cursor-pointer rounded-xl px-2
+                        flex justify-center items-center" title="Widget Settings"
+                        on:click={(e) => handleOpenSettings(e, widget.id, widget.componentName)}
+                        on:pointerdown|stopPropagation>
+                        <p class="text-darkerwhite font-light">Open Settings</p>
+                    </button>
+                </div>
+            {:else}
+                <div class="flex flex-col">
+                    <button class="bg-red hover:bg-darkerred transition duration-150 cursor-pointer rounded-xl px-2
+                    flex justify-center items-center w-fit h-fit self-end" title="Remove Widget"
+                    on:click={(e) => handleRemoveWidget(e, widget.id)} on:pointerdown|stopPropagation>
+                        <span class="material-symbols-outlined text-brighterblack" style="font-size: 1rem;">
+                            close
+                        </span>
+                    </button>
+                    <div class='self-center text-center mt-1'>
+                        <p class="text-brighterblack text-sm">{widget.componentName}</p>
+                        <p class="text-xs text-brightblack font-light">{widget.gridRowSpan}x{widget.gridColumnSpan}</p>
+                    </div>
+                </div>
+                <div class="self-center w-full">
+                    <button
+                        class="bg-brightblack hover:bg-brighterblack transition duration-150 cursor-pointer rounded-xl
+                        flex justify-center items-center w-full" title="Widget Settings"
+                        on:click={(e) => handleOpenSettings(e, widget.id, widget.componentName)}
+                        on:pointerdown|stopPropagation>
+                        <p class="text-darkerwhite font-light text-sm">Open Settings</p>
+                    </button>
+                </div>
+            {/if}
+            
+			
             <!-- End Edit Mode Buttons -->
         </div>
     {/each}
@@ -341,82 +347,5 @@
         z-index: 6; /* Above widget container */
         pointer-events: none; /* Overlay bg doesn't block */
         padding: 16px;
-    }
-
-    .widget-placeholder {
-        background-color: rgba(100, 150, 255, 0.7);
-        border: 1px dashed rgba(0, 0, 150, 0.7);
-        box-sizing: border-box;
-        cursor: grab; /* Default cursor */
-        display: flex; /* Use flex or grid as needed for content */
-        align-items: center;
-        justify-content: center;
-        text-align: center;
-        font-size: 0.8em;
-        color: #fff;
-        text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.5);
-        overflow: hidden;
-        user-select: none; -webkit-user-select: none; touch-action: none;
-        position: relative; /* For buttons */
-        transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
-        pointer-events: auto; /* Allow clicking */
-    }
-
-    /* Apply hover only when not dragging (checked via styles in getGridStyle) */
-    .widget-placeholder:hover {
-         background-color: rgba(120, 170, 255, 0.8);
-         border-style: solid;
-         border-color: rgba(0, 0, 150, 0.9);
-         transform: scale(1.01); /* Subtle hover grow */
-         box-shadow: 0 3px 8px rgba(0,0,0,0.15);
-    }
-
-    /* --- Styles for Placeholder Buttons --- */
-    .placeholder-buttons {
-        position: absolute;
-        top: 2px;
-        right: 2px;
-        display: flex;
-        gap: 3px;
-        z-index: 10; /* Above placeholder content */
-        pointer-events: auto; /* Ensure buttons are clickable */
-    }
-
-    .placeholder-button {
-        background-color: rgba(255, 255, 255, 0.7);
-        border: 1px solid rgba(0, 0, 0, 0.3);
-        border-radius: 4px;
-        padding: 1px 4px;
-        cursor: pointer;
-        font-size: 0.8em;
-        line-height: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        pointer-events: auto; /* Explicitly enable */
-        box-shadow: 0 1px 2px rgba(0,0,0,0.1);
-    }
-    .placeholder-button:hover {
-        background-color: rgba(255, 255, 255, 0.9);
-        border-color: rgba(0, 0, 0, 0.5);
-    }
-    .placeholder-button.remove-button:hover {
-        background-color: rgba(255, 200, 200, 0.9);
-    }
-     .placeholder-button.settings-button:hover {
-        background-color: rgba(200, 220, 255, 0.9);
-    }
-    /* --- End Placeholder Button Styles --- */
-
-    .placeholder-content {
-        padding: 5px;
-        display: flex;
-        flex-direction: column;
-        pointer-events: none;
-    }
-    .placeholder-content small {
-        font-size: 0.7em;
-        opacity: 0.8;
-        margin-top: 3px;
     }
 </style>
