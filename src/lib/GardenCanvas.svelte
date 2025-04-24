@@ -144,7 +144,6 @@ let previewMaterialOffGrid: THREE.MeshBasicMaterial;
 const offGridProjectionPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // Plane at Y=0, normal pointing up
 const offGridRay = new THREE.Ray(); // Reusable Ray for off-grid intersection
 const offGridIntersectPoint = new THREE.Vector3(); // Reusable Vector3
-const THROTTLE_DRAGOVER_MS = 75;
 // --- End Bounding Boxes ---
 
 const rotationSequence = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
@@ -2421,10 +2420,10 @@ function handleCanvasPointerDown(event: PointerEvent) {
 
 // --- NEW: Pointer Move Handler (for dragging items) ---
 
-const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
+function handlePointerMove(event: PointerEvent) {
     if (!isPointerDragging || !currentHeldItem || !container || !camera) {
-        hidePreviewBox();   // Hide planes
-        hidePreviewModel(); // Hide 3D model
+        hidePreviewBox();
+        hidePreviewModel();
         return;
     }
 
@@ -2439,7 +2438,6 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
         hidePreviewModel();
         return;
     }
-
 
     // Convert pointer coordinates to normalized device coordinates (NDC)
     const mouse = new THREE.Vector2(
@@ -2461,7 +2459,7 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
                 ? plantConfigs[currentHeldItem.typeId]
                 : decorConfigs[currentHeldItem.typeId];
 
-            if (!config) { // Config missing safety check
+            if (!config) {
                 hidePreviewBox();
                 hidePreviewModel();
                 return;
@@ -2480,38 +2478,23 @@ const throttledPointerMoveLogic = throttle((event: PointerEvent) => {
             updatePreviewBox(gridCoords.row, gridCoords.col, currentHeldItem.objectType, currentHeldItem.typeId, previewRotationY);
             updatePreviewModelTransformAndColor({ gridCoords: gridCoords }, status, previewRotationY);
         } else {
-            hidePreviewBox(); // Hide planes
-            // Position 3D model at the hit point on the ground mesh, mark as off-grid/invalid
+            hidePreviewBox();
             updatePreviewModelTransformAndColor({ worldPos: intersectPoint }, 'off-grid', previewRotationY);
         }
     } else {
-        // --- OFF GRID: Raycast against the invisible projection plane ---
-        offGridRay.copy(raycaster.ray); // Use the same ray
+        // OFF GRID: Raycast against the invisible projection plane
+        offGridRay.copy(raycaster.ray);
         if (offGridRay.intersectPlane(offGridProjectionPlane, offGridIntersectPoint)) {
-            // Hit the invisible plane
-            hidePreviewBox(); // Hide planes
-            // Update ONLY the 3D model, positioned at the intersection point
+            hidePreviewBox();
             updatePreviewModelTransformAndColor({ worldPos: offGridIntersectPoint }, 'off-grid', previewRotationY);
-             lastPreviewGridPos = null; // Explicitly clear grid pos when off grid
-
+            lastPreviewGridPos = null;
         } else {
-            // Missed both ground and projection plane (cursor likely outside canvas or over UI)
             hidePreviewBox();
             hidePreviewModel();
         }
     }
-}, THROTTLE_DRAGOVER_MS);
-
-function handlePointerMove(event: PointerEvent) {
-    // Only process if dragging an item
-    if (!isPointerDragging || !currentHeldItem) {
-        return;
-    }
-    // Call the throttled logic
-    throttledPointerMoveLogic(event);
 }
 // --- End Pointer Move Handler ---
-
 
 // --- NEW: Pointer Up/Cancel Handler (for placing items) ---
 function handlePointerUpOrCancel(event: PointerEvent) {
