@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { widgetStore, updateWidget, removeWidget, type WidgetConfig, uiMode } from './stores';
+    import { widgetStore, updateWidget, removeWidget, type WidgetConfig } from './stores';
 	import { onDestroy, onMount } from 'svelte';
 	import { get } from 'svelte/store';
 	import { openSettingsModal } from './modalStore';
@@ -18,75 +18,77 @@
 	let draggingWidgetId: string | null = null;
 	let draggedElement: HTMLElement | null = null; // The placeholder element that initiated the drag
 	let originalWidgetConfig: WidgetConfig | null = null;
-	// --- State: Current snapped grid position during drag ---
 	let currentDragSnapRow: number = 0;
 	let currentDragSnapCol: number = 0;
+	let pointerOffsetWithinElement = { x: 0, y: 0 }; // Click offset inside the element
+    let gridPositionChangedDuringDrag = false; // Tracks if snap position changed *at all* during the move sequence
+    let dragWasInitiatedOnWidget = false;
+
+    // --- Grid Calculation State ---
 	let cellPlusGapWidth: number = 0;
 	let cellPlusGapHeight: number = 0;
-	let gridPositionChangedDuringDrag = false; // Tracks if snap position changed from start
-	let pointerOffsetWithinElement = { x: 0, y: 0 }; // Click offset inside the element
 
 	// --- Resize Observer ---
 	let resizeObserver: ResizeObserver | null = null;
 
     // --- Helper Functions ---
     function getGridStyle(widget: WidgetConfig): string {
-        let displayRowStart: number;
-        let displayColStart: number;
-
-        // If this widget is the one being dragged, use the temporary snapped position
-		if (widget.id === draggingWidgetId) {
-            displayRowStart = currentDragSnapRow;
-            displayColStart = currentDragSnapCol;
-		} else {
-            // Otherwise, use its stored position from the store
-            displayRowStart = widget.gridRowStart;
-            displayColStart = widget.gridColumnStart;
-        }
-
-        // Calculate end positions based on the display start and span
+        // Use temporary snapped position if dragging, otherwise use store position
+        const displayRowStart = widget.id === draggingWidgetId ? currentDragSnapRow : widget.gridRowStart;
+        const displayColStart = widget.id === draggingWidgetId ? currentDragSnapCol : widget.gridColumnStart;
         const rowEnd = displayRowStart + widget.gridRowSpan;
 		const colEnd = displayColStart + widget.gridColumnSpan;
 
-		// Combine grid placement
-		return `
-            grid-area: ${displayRowStart} / ${displayColStart} / ${rowEnd} / ${colEnd};
-        `;
+		return `grid-area: ${displayRowStart} / ${displayColStart} / ${rowEnd} / ${colEnd};`;
 	}
 
     // --- Grid Calculation ---
     function updateCellDimensions() {
 		if (!gridOverlayElement) return;
-
-        if (gridOverlayElement.offsetParent === null) {
-            console.warn('WidgetGridOverlay is hidden, skipping dimension calculation.');
+        // Check visibility more robustly
+        if (!gridOverlayElement.offsetParent) {
+            // console.warn('WidgetGridOverlay is hidden, skipping dimension calculation.');
             cellPlusGapWidth = 1; // Prevent potential division by zero later
             cellPlusGapHeight = 1;
             return;
         }
-        
+
 		const overlayRect = gridOverlayElement.getBoundingClientRect();
-		if (overlayRect.width <= 0 || overlayRect.height <= 0) {
-			console.warn('Overlay zero dimensions.'); cellPlusGapWidth = 1; cellPlusGapHeight = 1; return;
+		// Use offsetWidth/Height as they are less likely to be zero during layout shifts
+		const gridAreaWidth = gridOverlayElement.offsetWidth;
+        const gridAreaHeight = gridOverlayElement.offsetHeight;
+
+		if (gridAreaWidth <= 0 || gridAreaHeight <= 0) {
+			// console.warn('Overlay zero dimensions.');
+            cellPlusGapWidth = 1;
+            cellPlusGapHeight = 1;
+            return;
 		}
-		const gridAreaWidth = overlayRect.width; const gridAreaHeight = overlayRect.height;
-		const totalGapWidth = (GRID_COLS - 1) * GRID_GAP; const totalGapHeight = (GRID_ROWS - 1) * GRID_GAP;
+
+		const totalGapWidth = (GRID_COLS - 1) * GRID_GAP;
+        const totalGapHeight = (GRID_ROWS - 1) * GRID_GAP;
 		const cellWidth = Math.max(0, (gridAreaWidth - totalGapWidth) / GRID_COLS);
 		const cellHeight = Math.max(0, (gridAreaHeight - totalGapHeight) / GRID_ROWS);
-		cellPlusGapWidth = cellWidth + GRID_GAP; cellPlusGapHeight = cellHeight + GRID_GAP;
-		if (cellPlusGapWidth <= 0) cellPlusGapWidth = 1; if (cellPlusGapHeight <= 0) cellPlusGapHeight = 1;
+		cellPlusGapWidth = cellWidth + GRID_GAP;
+        cellPlusGapHeight = cellHeight + GRID_GAP;
+
+		// Ensure non-zero/negative values after calculation
+		if (cellPlusGapWidth <= 0) cellPlusGapWidth = 1;
+        if (cellPlusGapHeight <= 0) cellPlusGapHeight = 1;
 	}
 
     onMount(() => {
+        // Use requestAnimationFrame to ensure layout is stable
 		requestAnimationFrame(() => {
 			if (gridOverlayElement && gridOverlayElement.offsetParent !== null) {
                 updateCellDimensions(); // Initial calculation
                 resizeObserver = new ResizeObserver(updateCellDimensions);
                 resizeObserver.observe(gridOverlayElement);
             } else if (gridOverlayElement) {
-                 console.log("WidgetGridOverlay initially hidden, ResizeObserver not attached.");
-                 // Consider adding logic here to attach the observer if/when it becomes visible,
-                 // e.g., using another ResizeObserver on a parent or a store subscription.
+                // Element exists but isn't visible yet, observer will be attached if it becomes visible later
+                // (Or we could add a mutation observer on the parent if needed, but often ResizeObserver handles this implicitly when attached)
+                // Initial calculation might fail here, updateCellDimensions handles this.
+                updateCellDimensions();
             }
 		});
 	});
@@ -94,174 +96,207 @@
     // Correct placement for onDestroy for observer
 	onDestroy(() => {
 		resizeObserver?.disconnect();
+        // Clean up potential dangling listeners if component is destroyed mid-drag
+        window.removeEventListener('pointermove', handlePointerMove);
+		window.removeEventListener('pointerup', handlePointerUp);
+		window.removeEventListener('pointercancel', handlePointerUp);
+		window.removeEventListener('lostpointercapture', handlePointerUp);
 	});
 
     // --- Pointer Event Handlers ---
 	function handlePointerDown(event: PointerEvent, widget: WidgetConfig) {
+        // Only handle primary button (left mouse, touch, pen)
 		if (event.button !== 0 || !event.isPrimary) return;
-		event.preventDefault();
-		event.stopPropagation();
+        // If event target is one of the buttons, the stopPropagation on them should have already prevented this,
+        // but double check just in case. If the target IS a button, do nothing here.
+        if ((event.target as HTMLElement)?.closest('button')) {
+            return;
+        }
 
-		updateCellDimensions();
-		if (cellPlusGapWidth <= 1 || cellPlusGapHeight <= 1) return;
+		event.preventDefault(); // Prevent text selection/default drag behavior
+		event.stopPropagation(); // Stop bubbling up further
+
+		updateCellDimensions(); // Ensure dimensions are current before calculations
+		if (cellPlusGapWidth <= 1 || cellPlusGapHeight <= 1) {
+            console.warn("Cannot start drag, cell dimensions are invalid.");
+            return; // Avoid division by zero or weird behavior
+        }
 
 		draggingWidgetId = widget.id;
 		originalWidgetConfig = { ...widget };
-		draggedElement = event.currentTarget as HTMLElement; // Element that received the event
+		draggedElement = event.currentTarget as HTMLElement;
 
 		const elementRect = draggedElement.getBoundingClientRect();
-
-		// 1. Calculate pointer offset WITHIN the clicked element
 		pointerOffsetWithinElement = {
 			x: event.clientX - elementRect.left,
 			y: event.clientY - elementRect.top
 		};
 
-		// 2. Initialize the drag state's snapped position to the widget's current position
+		// Initialize drag state
 		currentDragSnapRow = widget.gridRowStart;
 		currentDragSnapCol = widget.gridColumnStart;
-		gridPositionChangedDuringDrag = false;
+		gridPositionChangedDuringDrag = false; // Reset flag
+        dragWasInitiatedOnWidget = true; // *** IMPORTANT: Set flag indicating drag started on widget ***
 
-        // 4. Trigger reactivity
-        // TODO: check if needed with tailwind styles rewrite
-        widgets = [...widgets];
+		// Capture pointer and add listeners
+		try {
+            draggedElement.setPointerCapture(event.pointerId);
+            // Add listeners *after* successful capture if possible
+            window.addEventListener('pointermove', handlePointerMove, { passive: false }); // passive:false needed for preventDefault
+            window.addEventListener('pointerup', handlePointerUp);
+            window.addEventListener('pointercancel', handlePointerUp);
+            window.addEventListener('lostpointercapture', handlePointerUp);
+        } catch (e) {
+            console.warn('Could not set pointer capture:', e);
+            // If capture fails, maybe clear drag state? Or proceed cautiously.
+            // For now, we proceed, but drag might be jerky or interrupted.
+             window.addEventListener('pointermove', handlePointerMove, { passive: false });
+             window.addEventListener('pointerup', handlePointerUp);
+             window.addEventListener('pointercancel', handlePointerUp);
+            // No lostpointercapture listener if capture failed.
+        }
 
-		// 5. Capture pointer and add listeners
-		try { draggedElement.setPointerCapture(event.pointerId); }
-        catch (e) { console.warn('Could not set pointer capture:', e); }
-
-		window.addEventListener('pointermove', handlePointerMove, { passive: false });
-		window.addEventListener('pointerup', handlePointerUp);
-		window.addEventListener('pointercancel', handlePointerUp);
-		window.addEventListener('lostpointercapture', handlePointerUp);
-		console.log(`Pointer Down (Grid Snap): ${widget.id} at [${currentDragSnapRow}, ${currentDragSnapCol}]`);
+		// console.log(`Pointer Down (Grid Snap): ${widget.id} at [${currentDragSnapRow}, ${currentDragSnapCol}]`);
 	}
 
     function handlePointerMove(event: PointerEvent) {
 		if (!draggingWidgetId || !originalWidgetConfig || !draggedElement || cellPlusGapWidth <= 1 || cellPlusGapHeight <= 1) return;
-		event.preventDefault(); // Prevent scroll/selection
+		event.preventDefault(); // Prevent scroll/selection during drag
 
 		const overlayRect = gridOverlayElement.getBoundingClientRect();
-
-		// 1. Current pointer relative to overlay
 		const pointerXRelativeToOverlay = event.clientX - overlayRect.left;
 		const pointerYRelativeToOverlay = event.clientY - overlayRect.top;
-
-		// 2. Calculate where the element's TOP-LEFT corner *would ideally be* based on pointer & offset
 		const desiredVisualTopLeftX = pointerXRelativeToOverlay - pointerOffsetWithinElement.x;
 		const desiredVisualTopLeftY = pointerYRelativeToOverlay - pointerOffsetWithinElement.y;
 
-		// 3. Calculate the target grid cell based on this desired top-left position
-		const calculatedTargetCol = Math.floor(desiredVisualTopLeftX / cellPlusGapWidth) + 1;
-		const calculatedTargetRow = Math.floor(desiredVisualTopLeftY / cellPlusGapHeight) + 1;
+        // Calculate target grid cell index (0-based) then convert to 1-based
+		const calculatedTargetColIndex = Math.floor(desiredVisualTopLeftX / cellPlusGapWidth);
+		const calculatedTargetRowIndex = Math.floor(desiredVisualTopLeftY / cellPlusGapHeight);
+        const calculatedTargetCol = calculatedTargetColIndex + 1;
+        const calculatedTargetRow = calculatedTargetRowIndex + 1;
 
-		// 4. Clamp this calculated target cell to grid boundaries
-		const clampedTargetCol = Math.max(1, Math.min(calculatedTargetCol, GRID_COLS - originalWidgetConfig.gridColumnSpan + 1));
-		const clampedTargetRow = Math.max(1, Math.min(calculatedTargetRow, GRID_ROWS - originalWidgetConfig.gridRowSpan + 1));
+		// Clamp target cell to grid boundaries, considering widget span
+		const maxCol = GRID_COLS - originalWidgetConfig.gridColumnSpan + 1;
+        const maxRow = GRID_ROWS - originalWidgetConfig.gridRowSpan + 1;
+		const clampedTargetCol = Math.max(1, Math.min(calculatedTargetCol, maxCol));
+		const clampedTargetRow = Math.max(1, Math.min(calculatedTargetRow, maxRow));
 
-		// 5. Check if the *clamped* target cell is different from the current *snapped* position state
+		// Update snapped position state *only if it changed*
 		if (clampedTargetRow !== currentDragSnapRow || clampedTargetCol !== currentDragSnapCol) {
-			// Update the state storing the current snapped position
             currentDragSnapRow = clampedTargetRow;
 			currentDragSnapCol = clampedTargetCol;
-			gridPositionChangedDuringDrag = true;
+			gridPositionChangedDuringDrag = true; // Mark that position *did* change at some point
 
-            // console.log(`Grid Snap Move: Target [${currentDragSnapRow}, ${currentDragSnapCol}]`); // Debug
-
-			// --- CRITICAL: Trigger Svelte reactivity ---
-            // This forces getGridStyle to re-run for the dragging widget, updating its
-            // grid-area property and making it visually jump to the new snapped cell.
-			widgets = [...widgets];
+			// *** CRITICAL: Trigger Svelte reactivity to update style ***
+            // This forces getGridStyle to re-run for the dragging widget.
+			widgets = [...widgets]; // Re-assign to trigger update
 		}
 	}
 
     function handlePointerUp(event: PointerEvent) {
-		// Capture state before clearing
-		const elementInitiatingDrag = draggedElement; // The element we set cursor/capture on
+		// Capture state *before* clearing it
+		const elementThatInitiatedDrag = draggedElement; // Needed for releasing capture
 		const endedDragWidgetId = draggingWidgetId;
 		const originalConfig = originalWidgetConfig;
-
-		if (!endedDragWidgetId || !originalConfig || !elementInitiatingDrag) {
-            // Cleanup listeners if drag didn't start properly
-            window.removeEventListener('pointermove', handlePointerMove);
-            window.removeEventListener('pointerup', handlePointerUp);
-            window.removeEventListener('pointercancel', handlePointerUp);
-            window.removeEventListener('lostpointercapture', handlePointerUp);
-            return;
-        }
-
-		event.preventDefault();
-		console.log(`Pointer Up (Grid Snap): ${endedDragWidgetId}. Final Snap: [${currentDragSnapRow}, ${currentDragSnapCol}]`);
-
-		// --- Final Position is the last snapped state ---
-		const finalDropRow = currentDragSnapRow;
+        const wasDragStartedOnWidget = dragWasInitiatedOnWidget; // Capture the flag state
+        const finalDropRow = currentDragSnapRow; // Use the last snapped position
 		const finalDropCol = currentDragSnapCol;
 
-		// Determine if the final position is different from the start
-		const positionChanged = (finalDropRow !== originalConfig.gridRowStart || finalDropCol !== originalConfig.gridColumnStart);
+        // --- Cleanup ---
+        // Must happen *before* potentially modifying the store or triggering reactivity
+        // that relies on the drag state being cleared.
 
-		// --- Cleanup ---
-		// Release capture
-		if (event.pointerId && elementInitiatingDrag.hasPointerCapture(event.pointerId)) {
-			try { elementInitiatingDrag.releasePointerCapture(event.pointerId); }
+        // 1. Release Pointer Capture
+		if (elementThatInitiatedDrag && elementThatInitiatedDrag.hasPointerCapture(event.pointerId)) {
+			try { elementThatInitiatedDrag.releasePointerCapture(event.pointerId); }
             catch (e) { console.warn('Could not release pointer capture:', e); }
 		}
 
-		// Clear state variables AFTER use
-		draggingWidgetId = null; // This is crucial for getGridStyle to stop applying drag styles
-		originalWidgetConfig = null;
-		draggedElement = null;
-		gridPositionChangedDuringDrag = false;
-		pointerOffsetWithinElement = { x: 0, y: 0 };
-        currentDragSnapRow = 0; // Reset snap state
-        currentDragSnapCol = 0;
-
-		// Remove global listeners
+        // 2. Remove Global Listeners
 		window.removeEventListener('pointermove', handlePointerMove);
 		window.removeEventListener('pointerup', handlePointerUp);
 		window.removeEventListener('pointercancel', handlePointerUp);
 		window.removeEventListener('lostpointercapture', handlePointerUp);
 
+        // 3. Clear Drag State Variables
+		draggingWidgetId = null; // Crucial for getGridStyle to use store position
+		originalWidgetConfig = null;
+		draggedElement = null;
+        dragWasInitiatedOnWidget = false; // Reset the flag
+        // Keep gridPositionChangedDuringDrag until after the update logic
+        // Resetting visual snap state isn't strictly necessary but good practice
+        // pointerOffsetWithinElement = { x: 0, y: 0 };
+		// currentDragSnapRow = 0;
+		// currentDragSnapCol = 0;
+
+
+        // Exit if drag didn't actually start meaningfully
+        if (!endedDragWidgetId || !originalConfig) {
+            // Ensure reactivity update if something went wrong mid-way but state was partially set
+            widgets = [...get(widgetStore)];
+            return;
+        }
+
+		// console.log(`Pointer Up (Grid Snap): ${endedDragWidgetId}. Final Snap: [${finalDropRow}, ${finalDropCol}]`);
+
+        // *** NEW CLICK SUPPRESSION LOGIC ***
+        // If the drag sequence was started by pointerdown on the widget background
+        // (not directly on a button), suppress the upcoming click event.
+        if (wasDragStartedOnWidget) {
+            const suppressClickHandler = (clickEvent: MouseEvent) => {
+                clickEvent.stopPropagation();
+                clickEvent.preventDefault();
+                // console.log("Suppressed click because drag was initiated on widget background.");
+            };
+            // Add a one-time listener in the capture phase to stop the click *before* it reaches buttons
+            window.addEventListener('click', suppressClickHandler, { capture: true, once: true });
+        }
+
 
 		// --- Update Store and Trigger Final Style Reset ---
-		if (positionChanged) {
-			console.log(`Updating widget ${endedDragWidgetId} to [${finalDropRow}, ${finalDropCol}]`);
+		const positionActuallyChanged = (finalDropRow !== originalConfig.gridRowStart || finalDropCol !== originalConfig.gridColumnStart);
+
+		if (positionActuallyChanged) {
+			// console.log(`Updating widget ${endedDragWidgetId} to [${finalDropRow}, ${finalDropCol}]`);
+            // Fetch latest config in case other properties changed via settings modal etc. during drag
             const latestConfig = get(widgetStore).find(w => w.id === endedDragWidgetId) || originalConfig;
 			updateWidget({
-				...latestConfig,
-				gridRowStart: finalDropRow,
+				...latestConfig, // Spread latest config first
+				gridRowStart: finalDropRow, // Apply new position
 				gridColumnStart: finalDropCol
 			});
-            // Store update triggers reactivity, which will call getGridStyle.
-            // Since draggingWidgetId is now null, it will get normal styles.
+            // The store update will trigger reactivity, calling getGridStyle.
+            // Since draggingWidgetId is now null, it will get the final updated position.
 		} else {
-			console.log(`Widget ${endedDragWidgetId} position unchanged.`);
-			// Need to trigger reactivity manually ONLY IF position didn't change,
-            // to ensure getGridStyle runs and removes the drag styles.
-            // Use the latest store state to be safe.
+			// console.log(`Widget ${endedDragWidgetId} position unchanged.`);
+			// Position didn't change, but we were visually dragging (scale, bg color).
+            // We need to force a reactive update so getGridStyle runs again
+            // with draggingWidgetId = null to reset the style to its original state.
+            // Use the *current* store state, as no position update is needed.
 			widgets = [...get(widgetStore)];
 		}
+
+        // Reset this flag *after* use in the update logic
+        gridPositionChangedDuringDrag = false;
 	}
 
-    // --- NEW: Handler for Remove Button ---
+    // --- Handler for Remove Button ---
     function handleRemoveWidget(event: MouseEvent, widgetId: string) {
-        event.stopPropagation(); // Prevent triggering drag start
-        console.log("Requesting removal of widget:", widgetId);
+        // Stop propagation prevents the click from potentially reaching other handlers
+        // AND crucially, stopPropagation on the pointerdown prevents drag initiation.
+        event.stopPropagation();
         removeWidget(widgetId);
     }
 
-    // --- UPDATED: Handler for Settings Button ---
     function handleOpenSettings(event: MouseEvent, widgetId: string, componentName: string) {
-        event.stopPropagation(); // Prevent triggering drag start
-        openSettingsModal(widgetId, componentName); // Use the store function
-        // console.log(`Opening settings for ${componentName} (ID: ${widgetId})`); // Keep for debug if needed
-        // alert(`Settings for ${componentName} (ID: ${widgetId}) - UI not implemented yet.`); // Remove alert
+        event.stopPropagation();
+        openSettingsModal(widgetId, componentName);
     }
 </script>
 
 <div
-    class="widget-grid-overlay"
-    style="--grid-rows: {GRID_ROWS}; --grid-cols: {GRID_COLS}; --grid-gap: {GRID_GAP}px;"
+    class="absolute top-0 left-0 w-full h-full hidden xl:grid z-[6] pointer-events-none box-border p-4"
+    style="grid-template-rows: repeat({GRID_ROWS}, 1fr); grid-template-columns: repeat({GRID_COLS}, 1fr); gap: {GRID_GAP}px;"
     bind:this={gridOverlayElement}
     on:pointerdown|self={(e) => { e.preventDefault(); }}
 >
@@ -270,6 +305,7 @@
             class="box-border overflow-hidden rounded-xl flex flex-col justify-between p-2
             cursor-move select-none touch-none pointer-events-auto
             bg-whitealpha hover:bg-darkerwhitealpha data-[dragged=true]:bg-white transition duration-150
+            data-[dragged=true]:scale-105 data-[dragged=true]:z-7
             font-outfit"
             data-dragged={widget.id === draggingWidgetId}
             on:pointerdown={(e) => handlePointerDown(e, widget)}
@@ -280,7 +316,7 @@
             <!-- Content of the widget placeholder -->
             {#if widget.gridRowSpan < widget.gridColumnSpan}
                 <div class="flex justify-between items-start">
-                    <div class="-mt-1">
+                    <div class="-mt-1 flex-shrink">
                         <p class="text-brighterblack">{widget.componentName}</p>
                         <p class="text-xs text-brightblack font-light">{widget.gridRowSpan}x{widget.gridColumnSpan}</p>
                     </div>
@@ -332,20 +368,3 @@
     {/each}
 </div>
 
-<style>
-    .widget-grid-overlay {
-        position: absolute; /* Needs to overlay the container */
-        top: 0; left: 0; width: 100%; height: 100%;
-        display: none;
-        @media (width >= 80rem /* 1280px */) {
-            display: grid;
-        }
-        grid-template-rows: repeat(var(--grid-rows, 8), 1fr);
-        grid-template-columns: repeat(var(--grid-cols, 12), 1fr);
-        gap: var(--grid-gap);
-        box-sizing: border-box;
-        z-index: 6; /* Above widget container */
-        pointer-events: none; /* Overlay bg doesn't block */
-        padding: 16px;
-    }
-</style>
