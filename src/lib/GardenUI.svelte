@@ -19,6 +19,8 @@
     const DAILY_ITEM_COUNT = 5;
     const LAST_DAILY_REWARD_KEY = 'lastDailyRewardDate';
 
+    let isItemDrawerOpen = false;
+
     onMount(() => {
         const today = new Date().toDateString(); // Get date string (YYYY-MM-DD)
         const lastRewardDate = localStorage.getItem(LAST_DAILY_REWARD_KEY);
@@ -291,7 +293,12 @@
         return `${(progress * 100).toFixed(0)}% Grown`;
     }
 
-    
+    function calculateItemDrawerState(){
+        if ($uiMode === 'view' || $isDraggingItem) isItemDrawerOpen = false;
+        if ($uiMode==='edit' && isItemDrawerOpen) return 2;
+        else if ($uiMode==='edit') return 1;
+        else return 0;
+    }
 </script>
 
 <div class="font-outfit">
@@ -317,12 +324,62 @@
         </button>
     </div>
 
-    <div class="fixed left-1/2 -translate-x-1/2 bottom-2 flex
-    bg-white rounded-lg p-2 xl:p-4
-    transition duration-150 data-[visible=false]:translate-y-28" data-visible={$uiMode==='edit'}>
-        <!-- Items List -->
-        <div class="xl:hidden flex gap-2 mr-4">
-            <!-- Items List -->
+    <div class="fixed left-1/2 -translate-x-1/2 bottom-2 flex flex-col items-center
+    bg-white rounded-lg p-2 xl:p-4 max-h-[50dvh] xl:max-w-[36.5rem] max-w-dvw overflow-auto
+    transition duration-150 data-[state=0]:translate-y-48 xl:data-[state=1]:translate-y-26 data-[state=1]:translate-y-18" data-state={calculateItemDrawerState()}>
+        <div class="w-full justify-center flex mb-4">
+            <button class="h-fit py-2 self-center bg-darkerwhite hover:bg-darkwhite hover:scale-105 transition duration-75 ease-out
+            rounded-lg mr-4 text-brighterblack px-8 text-sm" on:click={() => isItemDrawerOpen = !isItemDrawerOpen}>{isItemDrawerOpen ? 'Close' : 'Open'} Object List</button>
+            <!-- Instruments -->
+            <div class="xl:hidden flex gap-2">
+                <!-- Water Tool -->
+                <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
+                data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+                data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
+                rounded-full size-12 text-4xl flex items-center justify-center" on:click={() => selectTool('water')}
+                    data-selected={isSelected({ type: 'tool', toolType: 'water' })}>
+                    <span class="material-symbols-outlined" style="font-size: 2rem;">
+                        water_drop
+                    </span>
+                </button>
+                <!-- Remove Tool -->
+                <button class="bg-brighterblack text-white data-[selected=true]:bg-red data-[selected=true]:text-brighterblack
+                data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+                data-[selected=true]:hover:bg-darkerred hover:bg-brightblack hover:scale-105
+                rounded-full size-12 text-4xl flex items-center justify-center" on:click={() => selectTool('remove')}
+                    data-selected={isSelected({ type: 'tool', toolType: 'remove' })}>
+                    <span class="material-symbols-outlined" style="font-size: 2rem;">
+                        delete
+                    </span>
+                </button>
+            </div>
+            <div class="xl:flex hidden gap-2">
+                <!-- Water Tool -->
+                <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
+                data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+                data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
+                rounded-full size-16 text-4xl flex items-center justify-center" on:click={() => selectTool('water')}
+                    data-selected={isSelected({ type: 'tool', toolType: 'water' })}>
+                    <span class="material-symbols-outlined" style="font-size: 2rem;">
+                        water_drop
+                    </span>
+                </button>
+                <!-- Remove Tool -->
+                <button class="bg-brighterblack text-white data-[selected=true]:bg-red data-[selected=true]:text-brighterblack
+                data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
+                data-[selected=true]:hover:bg-darkerred hover:bg-brightblack hover:scale-105
+                rounded-full size-16 text-4xl flex items-center justify-center" on:click={() => selectTool('remove')}
+                    data-selected={isSelected({ type: 'tool', toolType: 'remove' })}>
+                    <span class="material-symbols-outlined" style="font-size: 2rem;">
+                        delete
+                    </span>
+                </button>
+            </div>
+        </div>
+        
+        <!-- Mobile Items List -->
+        <div class="xl:hidden flex gap-4 mr-4 mb-2">
+            <!-- Plant List -->
             {#each availablePlants as plant}
                 <!-- Item -->
                 {@const quantity = $inventory.get(plant.id) || 0}
@@ -366,8 +423,9 @@
                 </div>
             {/each}
         </div>
-        <div class="xl:flex hidden gap-4 mr-8">
-            <!-- Items List -->
+        <!-- Desktop Item List -->
+        <div class="xl:flex flex-wrap hidden gap-4 mb-2">
+            <!-- Plant List -->
             {#each availablePlants as plant}
                 <!-- Item -->
                 {@const quantity = $inventory.get(plant.id) || 0}
@@ -389,6 +447,7 @@
                     </div>
                 </div>
             {/each}
+            <!-- Decor List -->
             {#each availableDecor as decor}
                 <!-- Item -->
                 {@const quantity = $inventory.get(decor.id) || 0}
@@ -410,51 +469,6 @@
                     </div>
                 </div>
             {/each}
-        </div>
-        <!-- Instruments -->
-        <div class="xl:hidden flex gap-2">
-            <!-- Water Tool -->
-            <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
-            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
-            data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
-            rounded-full size-12 text-4xl flex items-center justify-center" on:click={() => selectTool('water')}
-                data-selected={isSelected({ type: 'tool', toolType: 'water' })}>
-                <span class="material-symbols-outlined" style="font-size: 2rem;">
-                    water_drop
-                </span>
-            </button>
-            <!-- Remove Tool -->
-            <button class="bg-brighterblack text-white data-[selected=true]:bg-red data-[selected=true]:text-brighterblack
-            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
-            data-[selected=true]:hover:bg-darkerred hover:bg-brightblack hover:scale-105
-            rounded-full size-12 text-4xl flex items-center justify-center" on:click={() => selectTool('remove')}
-                data-selected={isSelected({ type: 'tool', toolType: 'remove' })}>
-                <span class="material-symbols-outlined" style="font-size: 2rem;">
-                    delete
-                </span>
-            </button>
-        </div>
-        <div class="xl:flex hidden gap-2">
-            <!-- Water Tool -->
-            <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
-            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
-            data-[selected=true]:hover:bg-darkerwhite hover:bg-brightblack hover:scale-105
-            rounded-full size-16 text-4xl flex items-center justify-center" on:click={() => selectTool('water')}
-                data-selected={isSelected({ type: 'tool', toolType: 'water' })}>
-                <span class="material-symbols-outlined" style="font-size: 2rem;">
-                    water_drop
-                </span>
-            </button>
-            <!-- Remove Tool -->
-            <button class="bg-brighterblack text-white data-[selected=true]:bg-red data-[selected=true]:text-brighterblack
-            data-[selected=true]:border-2 data-[selected=true]:border-brighterblack transition duration-75 ease-out
-            data-[selected=true]:hover:bg-darkerred hover:bg-brightblack hover:scale-105
-            rounded-full size-16 text-4xl flex items-center justify-center" on:click={() => selectTool('remove')}
-                data-selected={isSelected({ type: 'tool', toolType: 'remove' })}>
-                <span class="material-symbols-outlined" style="font-size: 2rem;">
-                    delete
-                </span>
-            </button>
         </div>
     </div>
     <!-- Widgets -->
