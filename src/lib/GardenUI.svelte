@@ -490,7 +490,7 @@
     <!-- Selected Object -->
     <div class="fixed left-1/2 -translate-x-1/2 top-2 flex items-center gap-4
     bg-white rounded-lg py-2 px-4
-    transition duration-150 data-[visible=false]:-translate-y-16 data-[visible=false]:scale-0" data-visible={isSelectionInfoVisible || false}>
+    transition duration-150 data-[visible=false]:-translate-y-16 data-[visible=false]:scale-0 z-50" data-visible={isSelectionInfoVisible || $isDraggingItem}>
     {#if $selectedObjectInfo}
         {@const iconKey = getIconKey($selectedObjectInfo)}
         {#if iconKey}
@@ -513,9 +513,15 @@
                 </div>
             {/key}
         {/if}
+    {:else if $isDraggingItem}
+        <div class="text-sm">
+            <p class="font-semibold">Controls:</p>
+            <p class="text-brighterblack text-sm font-light">Drag an object to the scene to place it</p>
+            <p class="text-brighterblack text-sm font-light"><span class="font-medium">Q/E</span> or <span class="font-medium">Scroll wheel</span> to rotate the object</p>
+        </div>
     {:else}
         <div class="text-sm">
-            <p class="text-brightblack text-semibold">No object is selected.</p>
+            <p class="text-brightblack text-semibold">Nothing to show.</p>
         </div>
         <div class="flex flex-col items-center">
             <div class="w-16 h-16 flex items-center justify-center">
