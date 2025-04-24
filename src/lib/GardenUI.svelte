@@ -294,7 +294,7 @@
     
 </script>
 
-<div class="">
+<div class="font-outfit">
     <!-- Right Bottom Corner Buttons: Watering and uiMode Changer -->
     <div class="fixed xl:bottom-2 bottom-4 xl:right-4 right-6 flex items-end gap-2">
         <button class="bg-brighterblack text-white data-[selected=true]:bg-white data-[selected=true]:text-brighterblack
@@ -489,16 +489,16 @@
     </div>
     <!-- Selected Object -->
     <div class="fixed left-1/2 -translate-x-1/2 top-2 flex items-center gap-4
-    bg-white rounded-lg p-2
+    bg-white rounded-lg py-2 px-4
     transition duration-150 data-[visible=false]:-translate-y-16 data-[visible=false]:scale-0" data-visible={isSelectionInfoVisible || false}>
     {#if $selectedObjectInfo}
         {@const iconKey = getIconKey($selectedObjectInfo)}
         {#if iconKey}
             <div class="text-sm">
-                <p class="font-bold">{$selectedObjectInfo.name} ({$selectedObjectInfo.objectType})</p>
+                <p class="font-semibold">{$selectedObjectInfo.name} ({$selectedObjectInfo.objectType})</p>
                 <p>Status: {$selectedObjectInfo.status}</p>
                 {#if $selectedObjectInfo.objectType === 'plant'}
-                    <p>{formatGrowth($selectedObjectInfo.growthProgress)}</p>
+                    <p class="text-brighterblack text-sm font-light">{formatGrowth($selectedObjectInfo.growthProgress)}</p>
                 {/if}
             </div>
             {#key iconKey}
@@ -515,8 +515,7 @@
         {/if}
     {:else}
         <div class="text-sm">
-            <p class="font-bold">No object is selected.</p>
-            <p>Status: No status</p>
+            <p class="text-brightblack text-semibold">No object is selected.</p>
         </div>
         <div class="flex flex-col items-center">
             <div class="w-16 h-16 flex items-center justify-center">

@@ -25,7 +25,7 @@
 			<span class="material-symbols-outlined animate-spin mr-2">
                 progress_activity
             </span>
-			<p class="font-outfit">Loading Garden...</p>
+			<p class="font-outfit">Loading WebGarden...</p>
 		</div>
 	{/if}
 
