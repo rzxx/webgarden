@@ -145,7 +145,7 @@
 
 {#if isOpen && currentWidget}
     <div
-        class="modal-overlay"
+        class="fixed inset-0 bg-black/50 flex justify-center items-center z-50 p-6 font-outfit text-black"
         on:click={handleCancel}
         on:keydown={handleOverlayKeydown}
         role="button"
@@ -154,28 +154,25 @@
     >
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
-            class="modal-content"
+            class="bg-white p-6 rounded-xl w-1/3 max-h-[80dvh] overflow-y-auto shadow-2xl shadow-black"
             on:click|stopPropagation
             role="dialog"
             aria-modal="true"
             aria-labelledby="modal-title"
             tabindex="-1"
         >
-            <h3 id="modal-title" class="modal-header">Settings: {componentName}</h3>
+            <h3 id="modal-title" class="text-2xl font-semibold mt-6 mb-12">Settings: {componentName}</h3>
             <!-- <p><small>ID: {widgetId}</small></p> -->
-
-            <hr />
 
             <!-- Dynamic Settings Form Area -->
             <form on:submit|preventDefault={handleSave}>
                 {#if settingsOptions.length > 0}
-                    <h4>Widget Settings</h4>
                     {#each settingsOptions as settingOpt (settingOpt.setting)}
                         {@const inputId = getInputId(settingOpt.setting)}
-                        <div class="form-group">
+                        <div class="mb-4">
                             {#if settingOpt.type === 'boolean'}
                                 <!-- Special layout for boolean (checkbox) -->
-                                <div class="checkbox-group">
+                                <div class="flex gap-2 has-checked:text-brighterblack text-black accent-brighterblack">
                                     <input
                                         type="checkbox"
                                         id={inputId}
@@ -190,7 +187,7 @@
                                     <select
                                         id={inputId}
                                         bind:value={localSettings[settingOpt.setting]}
-                                        class="input-field"
+                                        class="block mt-1 w-full px-4 py-2 bg-brighterblack rounded-lg text-white focus:bg-brightblack focus:outline-0"
                                     >
                                         {#each settingOpt.options || [] as opt}
                                             <option value={opt.value}>{opt.label}</option>
@@ -204,7 +201,7 @@
                                         step={settingOpt.step || 'any'}
                                         min={settingOpt.min}
                                         max={settingOpt.max}
-                                        class="input-field"
+                                        class="block mt-1 w-full px-4 py-2 bg-darkerwhite rounded-lg text-brighterblack focus:bg-darkwhite focus:outline-0 border-2 border-darkwhite"
                                         placeholder={settingOpt.placeholder || ''}
                                     />
                                 {:else if settingOpt.type === 'string'}
@@ -213,7 +210,7 @@
                                         id={inputId}
                                         bind:value={localSettings[settingOpt.setting]}
                                         placeholder={settingOpt.placeholder || ''}
-                                        class="input-field"
+                                        class="block mt-1 w-full px-4 py-2 bg-darkerwhite rounded-lg text-brighterblack focus:bg-darkwhite focus:outline-0 border-2 border-darkwhite"
                                     />
                                 {:else}
                                     <!-- Fallback for unknown type (or treat as string) -->
@@ -221,23 +218,21 @@
                                         type="text"
                                         id={inputId}
                                         bind:value={localSettings[settingOpt.setting]}
-                                        class="input-field"
+                                        class="block mt-1 w-full px-4 py-2 bg-darkerwhite rounded-lg text-brighterblack focus:bg-darkwhite focus:outline-0 border-2 border-darkwhite"
                                         placeholder="Unknown setting type"
                                     />
                                 {/if}
                             {/if}
                         </div>
                     {/each}
-                    <hr />
                 {/if}
 
 
                 <!-- Size Selection Dropdown -->
-                <h4>Widget Size</h4>
                 {#if availableSizes.length > 0}
-                    <div class="form-group">
-                        <label for="widget-size">Size:</label>
-                        <select id="widget-size" bind:value={selectedSizeKey} class="input-field">
+                    <div class="mt-6">
+                        <label for="widget-size">Widget Size:</label>
+                        <select id="widget-size" bind:value={selectedSizeKey} class="block mt-1 w-full px-4 py-2 bg-brighterblack rounded-lg text-white focus:bg-brightblack focus:outline-0">
                             {#each availableSizes as sizeOpt (sizeOpt.label)}
                                 <option value="{sizeOpt.rows}-{sizeOpt.cols}">
                                     {sizeOpt.label} ({sizeOpt.rows}x{sizeOpt.cols})
@@ -257,11 +252,9 @@
                 </details>
                 -->
 
-                <hr />
-
-                <div class="modal-actions">
-                    <button type="button" on:click={handleCancel} class="button secondary">Cancel</button>
-                    <button type="submit" class="button primary">Save Settings</button>
+                <div class="flex justify-end gap-4 mt-12">
+                    <button type="button" on:click={handleCancel} class="cursor-pointer bg-darkwhite hover:bg-darkerwhite transition duration-150 text-brighterblack px-4 py-2 rounded-lg font-light">Cancel</button>
+                    <button type="submit" class="cursor-pointer bg-brighterblack hover:bg-brightblack transition duration-150 text-white px-4 py-2 rounded-lg font-semibold">Save Settings</button>
                 </div>
             </form> <!-- End Form -->
         </div>
@@ -269,133 +262,3 @@
 {/if}
 
 <svelte:window on:keydown={handleKeydown} />
-
-<style>
-    .modal-overlay {
-        position: fixed;
-        inset: 0; /* top, left, right, bottom */
-        background-color: rgba(0, 0, 0, 0.6);
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        z-index: 1000;
-        padding: 20px; /* Add padding for smaller screens */
-    }
-    .modal-content {
-        background-color: white;
-        padding: 20px 25px;
-        border-radius: 8px;
-        box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-        min-width: 300px;
-        max-width: 500px;
-        width: 90%; /* Responsive width */
-        z-index: 1001;
-        max-height: 90vh; /* Prevent modal becoming too tall */
-        overflow-y: auto; /* Allow scrolling if content overflows */
-        color: #333; /* Darker text for better readability */
-    }
-    .modal-header {
-        margin-top: 0;
-        margin-bottom: 15px;
-        font-size: 1.4em;
-        color: #111;
-    }
-    .modal-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 10px;
-        margin-top: 25px;
-        padding-top: 15px;
-        border-top: 1px solid #eee; /* Separator line */
-    }
-    .form-group {
-        margin-bottom: 18px; /* Increased spacing */
-    }
-    label {
-        display: block;
-        margin-bottom: 6px;
-        font-weight: 500; /* Slightly bolder labels */
-        font-size: 0.95em;
-    }
-    .input-field {
-        display: block; /* Ensure inputs take full block width */
-        width: 100%;
-        padding: 10px 12px; /* More padding */
-        box-sizing: border-box;
-        border: 1px solid #ccc;
-        border-radius: 4px;
-        font-size: 1em;
-        background-color: #f9f9f9; /* Slightly off-white background */
-    }
-    .input-field:focus {
-         border-color: #007bff;
-         outline: none;
-         box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
-         background-color: #fff;
-    }
-
-    /* Styles for checkbox */
-    .checkbox-group {
-        display: flex;
-        align-items: center;
-        gap: 8px; /* Space between checkbox and label */
-    }
-    .checkbox-group input[type="checkbox"] {
-       width: auto; /* Override width: 100% */
-       margin: 0;
-       /* Optional: Style checkbox appearance */
-       accent-color: #007bff; /* Color the checkmark */
-       transform: scale(1.1); /* Slightly larger checkbox */
-    }
-    .checkbox-group label {
-        margin-bottom: 0; /* Remove bottom margin for inline label */
-        font-weight: normal; /* Normal weight for checkbox label */
-    }
-
-    h4 {
-        margin-top: 20px;
-        margin-bottom: 10px;
-        font-size: 1.1em;
-        color: #444;
-        border-bottom: 1px solid #eee;
-        padding-bottom: 5px;
-    }
-
-    hr {
-        margin: 20px 0;
-        border: none;
-        border-top: 1px solid #eee;
-    }
-    .button {
-        padding: 8px 16px;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 0.95em;
-        transition: background-color 0.2s ease;
-    }
-    .button.primary {
-        background-color: #007bff;
-        color: white;
-    }
-     .button.primary:hover {
-        background-color: #0056b3;
-    }
-    .button.secondary {
-        background-color: #f0f0f0;
-        color: #333;
-        border: 1px solid #ccc;
-    }
-    .button.secondary:hover {
-         background-color: #e0e0e0;
-    }
-
-    /* Optional: Add visual focus indicator for the overlay */
-    .modal-overlay:focus-visible {
-        outline: 3px solid dodgerblue;
-        outline-offset: 3px;
-    }
-    .modal-content:focus {
-        outline: none; /* Usually remove outline here as focus is managed internally */
-    }
-</style>

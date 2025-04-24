@@ -304,7 +304,7 @@
         <div
             class="box-border overflow-hidden rounded-xl flex flex-col justify-between p-2
             cursor-move select-none touch-none pointer-events-auto
-            bg-whitealpha hover:bg-darkerwhitealpha data-[dragged=true]:bg-white transition duration-150
+            bg-white/70 hover:bg-darkerwhite/70 data-[dragged=true]:bg-white transition duration-150
             data-[dragged=true]:scale-105 data-[dragged=true]:z-7
             font-outfit"
             data-dragged={widget.id === draggingWidgetId}
