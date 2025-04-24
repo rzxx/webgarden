@@ -1,7 +1,9 @@
 <script lang="ts">
     import { onDestroy, onMount } from 'svelte';
+    import { widgetComponentMap } from './widgetRegistry';
     import { modalStore, closeSettingsModal } from './modalStore';
     import { widgetStore, updateWidget, type WidgetConfig, type WidgetSizeOption } from './stores';
+    import { GRID_ROWS, GRID_COLS, GRID_GAP } from './stores';
     // --- Import centralized module map ---
     import { widgetComponentModules } from './widgetRegistry'; // Correctly imported
     // --- End Import ---
@@ -32,6 +34,42 @@
     let selectedColSpan: number = 1;
     // --- End Size State ---
 
+    let currentCellWidth = 1; // Local state for calculated dimensions
+    let currentCellHeight = 1;
+    let previewWidth = 0;
+    let previewHeight = 0;
+    let PreviewComponent: any = null;
+    const GRID_PADDING = 16;
+
+    function calculateApproximateCellDimensions() {
+        // Use viewport dimensions minus assumed padding
+        const availableWidth = window.innerWidth - (GRID_PADDING * 2);
+        const availableHeight = window.innerHeight - (GRID_PADDING * 2); // Assuming similar vertical padding
+
+        if (availableWidth <= 0 || availableHeight <= 0 || GRID_COLS <= 0 || GRID_ROWS <= 0) {
+            currentCellWidth = 50; // Fallback width
+            currentCellHeight = 50; // Fallback height
+            console.warn("Could not calculate valid cell dimensions based on viewport.");
+            return;
+        }
+
+        const totalGapWidth = (GRID_COLS - 1) * GRID_GAP;
+        const totalGapHeight = (GRID_ROWS - 1) * GRID_GAP;
+
+        const cellWidth = Math.max(1, (availableWidth - totalGapWidth) / GRID_COLS);
+        const cellHeight = Math.max(1, (availableHeight - totalGapHeight) / GRID_ROWS);
+
+        currentCellWidth = cellWidth + GRID_GAP;
+        currentCellHeight = cellHeight + GRID_GAP;
+
+        // Trigger preview recalculation explicitly as reactive dependencies might not catch window resize indirectly
+        calculatePreviewSize();
+    }
+
+    const handleResize = () => {
+        calculateApproximateCellDimensions();
+    };
+
     const unsubscribeModal = modalStore.subscribe(($modalStore) => {
         isOpen = $modalStore.isOpen;
         widgetId = $modalStore.widgetId;
@@ -55,12 +93,15 @@
                 selectedColSpan = currentWidget.gridColumnSpan;
                 selectedSizeKey = `${selectedRowSpan}-${selectedColSpan}`;
             } else {
+                // Reset if widget not found (shouldn't happen if modal opens correctly)
                 availableSizes = [];
                 settingsOptions = [];
                 selectedRowSpan = 1;
                 selectedColSpan = 1;
                 selectedSizeKey = '1-1';
             }
+            // Recalculate preview size when modal opens/widget changes
+            calculateApproximateCellDimensions(); // Use the internal calculation
 
         } else {
             currentWidget = null;
@@ -68,6 +109,9 @@
             availableSizes = [];
             settingsOptions = [];
             selectedSizeKey = '';
+            PreviewComponent = null; // Clear preview component when closed
+            previewWidth = 0;
+            previewHeight = 0;
         }
     });
 
@@ -82,6 +126,35 @@
         }
     }
     // --- End Size Update ---
+
+    // Recalculate preview size when selected size changes or cell dimensions change
+    $: {
+        if (selectedSizeKey && componentName) {
+            const [rowsStr, colsStr] = selectedSizeKey.split('-');
+            selectedRowSpan = parseInt(rowsStr, 10);
+            selectedColSpan = parseInt(colsStr, 10);
+            PreviewComponent = widgetComponentMap[componentName]; // Get the component constructor
+            calculatePreviewSize();
+        } else {
+            PreviewComponent = null;
+            previewWidth = 0;
+            previewHeight = 0;
+        }
+    }
+
+    function calculatePreviewSize() {
+        // Use the internally calculated currentCellWidth/Height
+        if (selectedColSpan > 0 && selectedRowSpan > 0 && currentCellWidth > 1 && currentCellHeight > 1) {
+            // Ensure calculated dimensions are positive
+            previewWidth = Math.max(1, (selectedColSpan * currentCellWidth) - GRID_GAP);
+            previewHeight = Math.max(1, (selectedRowSpan * currentCellHeight) - GRID_GAP);
+        } else {
+            // Fallback or default size if dimensions are invalid
+            previewWidth = 50; // Example fallback
+            previewHeight = 50;
+        }
+         // console.log(`Calculated Preview Size: ${previewWidth}x${previewHeight} using Cell: ${currentCellWidth}x${currentCellHeight}`); // For debugging
+    }
 
     function handleSave() {
         if (currentWidget) {
@@ -124,16 +197,22 @@
         // Trigger cancel ONLY if Enter is pressed directly on the overlay element itself
         if (event.target === event.currentTarget && (event.key === 'Enter')) {
             // Check if the event target is the same as the element the listener is attached to
-            console.log("Enterpressed directly on overlay, cancelling."); // For debugging
             event.preventDefault(); // Prevent any default action for Enter on the overlay div
             handleCancel();
         }
     }
 
     onMount(() => {
+        // Initial calculation
+        calculateApproximateCellDimensions();
+        // Add resize listener
+        window.addEventListener('resize', handleResize);
         // Add keydown listener when modal is potentially open
         window.addEventListener('keydown', handleKeydown);
+
+        // Cleanup function
         return () => {
+            window.removeEventListener('resize', handleResize);
             window.removeEventListener('keydown', handleKeydown);
         };
     });
@@ -145,7 +224,7 @@
 
 {#if isOpen && currentWidget}
     <div
-        class="fixed inset-0 bg-black/50 flex justify-center items-center z-50 p-6 font-outfit text-black"
+        class="fixed inset-0 bg-black/50 flex justify-evenly items-center z-50 p-6 font-outfit text-black"
         on:click={handleCancel}
         on:keydown={handleOverlayKeydown}
         role="button"
@@ -257,6 +336,19 @@
                     <button type="submit" class="cursor-pointer bg-brighterblack hover:bg-brightblack transition duration-150 text-white px-4 py-2 rounded-lg font-semibold">Save Settings</button>
                 </div>
             </form> <!-- End Form -->
+        </div>
+
+        <!-- Widget Preview -->
+        <div class="flex flex-col items-center justify-center p-4 rounded-lg">
+            <h4 class="text-xl font-light text-darkerwhite mb-4">Preview</h4>
+            {#if PreviewComponent}
+                <div class="grid" style="width: {previewWidth}px; height: {previewHeight}px;">
+                    <svelte:component this={PreviewComponent} settings={localSettings} />
+                </div>
+            {:else}
+                <div class="text-red">Select size to preview</div>
+            {/if}
+            <!-- <p class="text-xs text-darkerwhite font-light mt-2">({Math.round(previewWidth)}px x {Math.round(previewHeight)}px)</p> -->
         </div>
     </div>
 {/if}
