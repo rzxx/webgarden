@@ -8,16 +8,29 @@ Hosted at [3d-webgarden.netlify.app](https://3d-webgarden.netlify.app/). Start s
 
 A web application built with Svelte using Three.js. It includes a 3D editor for a personal garden and a system of customizable widgets.
 
-**Mobile device support is not provided! Expect bugs and unstable perfomance.**
+![screenshot](https://github.com/user-attachments/assets/b7f1b114-e9df-46e9-9486-d60bbde33642)
 
 ## Features
 
 Currently available:
 
 - Placing and removing plants and decor.
+
+  ![placing-removing](https://github.com/user-attachments/assets/2885b9c3-d03d-4247-9744-1016041c372d)
+  
 - Caring for plants *(watering)*.
+
+  ![watering](https://github.com/user-attachments/assets/8d1d302b-bffb-4b44-a9ae-7035d93df76e)
+
 - Observing the change of day and night *(linked to device time!)*.
+
+  ![time](https://github.com/user-attachments/assets/4912de76-f69c-4f79-aa21-b9dec341e077)
+
 - Adding widgets to the screen *(currently only time, date and weather, in development)*.
+
+  ![widget](https://github.com/user-attachments/assets/fc57fb90-f42a-4678-9856-3810351d3c4d)
+
+**Widgets support on mobile devices is not provided.**
 
 ## How to use it?
 
